@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "Agent for Chrome",
+    "description": "Extension name shown in chrome://extensions and the toolbar."
+  },
+  "extDescription": {
+    "message": "Browser agent — reads pages and acts on your behalf, with per-action permissions.",
+    "description": "Extension description shown in chrome://extensions."
+  },
+  "actionTitle": {
+    "message": "Open Agent",
+    "description": "Tooltip on the toolbar button."
+  },
+  "commandTogglePanel": {
+    "message": "Toggle the agent side panel",
+    "description": "Label for the keyboard shortcut in chrome://extensions/shortcuts."
+  }
+}

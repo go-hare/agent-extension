@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en" data-theme="claude" data-mode="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent</title>
+    <!--
+      主题在 JS 加载前先定好，否则会有一帧白闪。
+      CSP 是 script-src 'self'，不能写 inline script —— 所以这里靠
+      main.tsx 在最顶部同步设置 data-mode，配合 body 的初始背景色兜底。
+    -->
+  </head>
+  <body class="bg-bg-100 text-text-100">
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>
