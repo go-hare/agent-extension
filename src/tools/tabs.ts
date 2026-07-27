@@ -36,9 +36,33 @@ export async function getEffectiveTabId(
 
   try {
     const tab = await chrome.tabs.get(requested);
-    if (tab?.id !== undefined) return tab.id;
-  } catch {
-    /* 落到下面报错 */
+    if (tab?.id === undefined) {
+      /* fall through */
+    } else {
+      // 当前会话在 tab group 内时，默认禁止跨组 / 指到未分组 tab
+      // （对齐官方 group-scoped context，避免泄漏同窗口其它标签）。
+      try {
+        const cur = await chrome.tabs.get(fallback);
+        const curG = cur.groupId;
+        if (curG !== undefined && curG !== -1) {
+          const reqG = tab.groupId;
+          if (reqG === undefined || reqG === -1 || reqG !== curG) {
+            throw new Error(
+              `Tab ${requested} is outside the current tab group. Call tabs_context for tabs in the current group, or switch to that tab first.`,
+            );
+          }
+        }
+      } catch (e) {
+        if (e instanceof Error && /outside the current tab group|different tab group/.test(e.message)) {
+          throw e;
+        }
+      }
+      return tab.id;
+    }
+  } catch (e) {
+    if (e instanceof Error && /outside the current tab group|different tab group/.test(e.message)) {
+      throw e;
+    }
   }
   throw new Error(
     `Tab ${requested} no longer exists. Call tabs_context to get the current list of tabs.`,
@@ -81,11 +105,17 @@ function toTabInfo(t: chrome.tabs.Tab): TabInfo {
  *
  * 有意**不列出所有窗口的所有 tab**：那会把用户在别的窗口开的私人页面
  * （邮箱、网银）标题一并送进模型上下文。只列当前窗口。
+ *
+ * 若当前 tab 在某个 tab group 内，默认只列同组（对齐官方 tabs_context），
+ * 避免把同窗口其它分组的标签页泄漏进上下文。
  */
 export async function listTabs(currentTabId: number): Promise<TabInfo[]> {
   let windowId: number | undefined;
+  let groupId: number | undefined;
   try {
-    windowId = (await chrome.tabs.get(currentTabId)).windowId;
+    const cur = await chrome.tabs.get(currentTabId);
+    windowId = cur.windowId;
+    if (cur.groupId !== undefined && cur.groupId !== -1) groupId = cur.groupId;
   } catch {
     /* 当前 tab 已关闭，退化到当前窗口 */
   }
@@ -93,7 +123,11 @@ export async function listTabs(currentTabId: number): Promise<TabInfo[]> {
   const tabs = await chrome.tabs.query(
     windowId !== undefined ? { windowId } : { currentWindow: true },
   );
-  return tabs.filter((t) => t.id !== undefined).map(toTabInfo);
+  const mapped = tabs.filter((t) => t.id !== undefined).map(toTabInfo);
+  if (groupId !== undefined) {
+    return mapped.filter((t) => t.groupId === groupId);
+  }
+  return mapped;
 }
 
 export async function buildTabContext(
@@ -101,25 +135,86 @@ export async function buildTabContext(
   executedOnTabId?: number,
 ): Promise<TabContext> {
   const availableTabs = await listTabs(currentTabId);
+  let tabGroupId: number | undefined;
+  let tabGroupTitle: string | undefined;
+  try {
+    const cur = await chrome.tabs.get(currentTabId);
+    if (cur.groupId !== undefined && cur.groupId !== -1) {
+      tabGroupId = cur.groupId;
+      try {
+        const g = await chrome.tabGroups.get(cur.groupId);
+        tabGroupTitle = g.title || undefined;
+      } catch {
+        /* tabGroups 权限或 API 不可用 */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
   return {
     currentTabId,
     executedOnTabId,
     availableTabs,
     tabCount: availableTabs.length,
+    tabGroupId,
+    tabGroupTitle,
   };
 }
 
 /** 给模型看的 tab 列表文本。比 JSON 省 token，也更好读。 */
 export function formatTabs(ctx: TabContext): string {
+  const headerBits = [`${ctx.tabCount} tab(s)`];
+  if (ctx.tabGroupId !== undefined) {
+    headerBits.push(
+      ctx.tabGroupTitle
+        ? `group "${ctx.tabGroupTitle}" (#${ctx.tabGroupId})`
+        : `group #${ctx.tabGroupId}`,
+    );
+  }
   const lines = ctx.availableTabs.map((t) => {
     const marks: string[] = [];
     if (t.tabId === ctx.currentTabId) marks.push('current');
     if (t.active) marks.push('active');
+    if (t.groupId !== undefined) marks.push(`g${t.groupId}`);
     if (!t.attachable) marks.push('not operable');
     const suffix = marks.length ? ` (${marks.join(', ')})` : '';
     return `  [${t.tabId}] ${t.title || '(untitled)'}${suffix}\n      ${t.url}`;
   });
-  return `${ctx.tabCount} tab(s):\n${lines.join('\n')}`;
+  return `${headerBits.join(' · ')}:\n${lines.join('\n')}`;
+}
+
+/** 本侧栏会话里 agent 自建的 tab group（不吞用户原 tab）。 */
+let agentGroupId: number | undefined;
+
+export function getAgentGroupId(): number | undefined {
+  return agentGroupId;
+}
+
+export function resetAgentGroup(): void {
+  agentGroupId = undefined;
+}
+
+/**
+ * 把 agent 新开的 tab 放进 "Agent" 分组。
+ * - 当前 tab 已在用户分组 → 跟用户分组（调用方处理）
+ * - 否则只把 agent 开的 tab 收进独立 Agent 组，不挪用户原 tab
+ */
+export async function ensureAgentTabGrouped(newTabId: number): Promise<void> {
+  try {
+    if (agentGroupId !== undefined) {
+      await chrome.tabs.group({ tabIds: newTabId, groupId: agentGroupId });
+      return;
+    }
+    const groupId = await chrome.tabs.group({ tabIds: newTabId });
+    agentGroupId = groupId;
+    try {
+      await chrome.tabGroups.update(groupId, { title: 'Agent', color: 'purple' });
+    } catch {
+      /* title 可选 */
+    }
+  } catch {
+    /* 分组失败不阻断建 tab */
+  }
 }
 
 // ───────────────────── content script 通信 ─────────────────────

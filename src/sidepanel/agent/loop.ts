@@ -228,14 +228,20 @@ function makeToolContext(
   toolUseId: string,
   emit: (e: AgentEvent) => void,
 ): ToolContext {
-  return {
+  // requestPermission 用普通 method（非 arrow），以便 browser_batch 的
+  // `{...ctx, batchMode:true}` 在子工具以 ctx.requestPermission() 调用时
+  // this.batchMode 为 true，从而对 needsPrompt 走快速失败而不挂 UI。
+  const ctx: ToolContext = {
     tabId: opts.tabId,
     windowId: opts.windowId,
     turnId,
     toolUseId,
     signal: opts.signal,
+    messages: opts.messages,
+    batchMode: false,
 
     async requestPermission(
+      this: ToolContext,
       permission: Permission,
       detail,
     ): Promise<PermissionDecision> {
@@ -246,6 +252,18 @@ function makeToolContext(
 
       if (decision.allowed) return decision;
       if (!decision.needsPrompt) return decision; // 明确拒绝，不问
+
+      if (this.batchMode) {
+        return {
+          allowed: false,
+          needsPrompt: true,
+          reason:
+            `Permission required for "${detail.actionLabel}"` +
+            `${url ? ` on ${url}` : ''}. ` +
+            `Call this tool standalone (not in browser_batch) so the user can approve, ` +
+            `then batch the remaining steps.`,
+        };
+      }
 
       const host = hostOf(url);
 
@@ -281,6 +299,7 @@ function makeToolContext(
       return { allowed: true, needsPrompt: false };
     },
   };
+  return ctx;
 }
 
 /** ToolResult → Anthropic tool_result content block。 */
@@ -296,15 +315,32 @@ function toContentBlock(toolUseId: string, result: ToolResult): ContentBlockPara
 
   const content: Array<
     | { type: 'text'; text: string }
-    | { type: 'image'; source: { type: 'base64'; media_type: 'image/png' | 'image/jpeg' | 'image/webp'; data: string } }
+    | {
+        type: 'image';
+        source: {
+          type: 'base64';
+          media_type: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+          data: string;
+        };
+      }
   > = [];
 
   if (result.output) content.push({ type: 'text', text: result.output });
 
   for (const img of result.images ?? []) {
+    // Anthropic image blocks: keep gif as jpeg/png path only if needed later;
+    // pass through declared mediaType for catalog/export fidelity.
+    const mediaType =
+      img.mediaType === 'image/gif'
+        ? 'image/gif'
+        : img.mediaType === 'image/webp'
+          ? 'image/webp'
+          : img.mediaType === 'image/jpeg'
+            ? 'image/jpeg'
+            : 'image/png';
     content.push({
       type: 'image',
-      source: { type: 'base64', media_type: img.mediaType, data: img.data },
+      source: { type: 'base64', media_type: mediaType, data: img.data },
     });
   }
 

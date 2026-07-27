@@ -16,9 +16,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
 import { answerPermission, runTurn, type AgentEvent } from '@/sidepanel/agent/loop';
 import { permissionManager } from '@/permissions/manager';
-import { cleanupTools, clearTodos } from '@/tools/registry';
+import { cleanupTools, clearTodos, clearSessionMedia } from '@/tools/registry';
+import { setShortcutRunner } from '@/tools/shortcuts';
 import { hasUsableCredentials, peekSettings } from '@/storage/settings';
 import type { PermissionScope } from '@/shared/types';
+import { resetAgentGroup } from '@/tools/tabs';
+import { drainQueue, requeueFront } from '@/scheduling/store';
 import {
   addNotice,
   addPermission,
@@ -38,6 +41,21 @@ export interface Usage {
   outputTokens: number;
 }
 
+/** 侧栏附件：已写入 media catalog，带 id 供 upload 工具引用。 */
+export interface OutgoingAttachment {
+  kind: 'image' | 'file';
+  id: string;
+  name: string;
+  mimeType: string;
+  /** raw base64，无 data: 前缀；图片会进 API image block */
+  data: string;
+}
+
+export interface SendPayload {
+  text: string;
+  attachments?: OutgoingAttachment[];
+}
+
 export interface SessionState {
   items: TranscriptItem[];
   running: boolean;
@@ -45,7 +63,7 @@ export interface SessionState {
   awaitingPermission: boolean;
   usage: Usage;
   tab: { id: number; windowId: number; url: string; title: string } | null;
-  send: (text: string) => void;
+  send: (text: string, attachments?: OutgoingAttachment[]) => void;
   stop: () => void;
   reset: () => void;
   answer: (toolUseId: string, granted: boolean, scope: PermissionScope) => void;
@@ -60,6 +78,10 @@ export function useSession(): SessionState {
 
   const apiMessages = useRef<MessageParam[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+  // send 的稳定引用，给 shortcut / schedule 回调用（声明须早于 useEffect）
+  const sendRef = useRef<SessionState['send'] | null>(null);
+  // turn 结束后再 drain 定时队列
+  const pullSchedulesRef = useRef<(() => void) | null>(null);
 
   // ── 锚定当前 tab ──
   //
@@ -89,6 +111,57 @@ export function useSession(): SessionState {
     void permissionManager.init();
     void syncTab();
 
+    // shortcuts_execute → 新 turn
+    setShortcutRunner((prompt, meta) => {
+      // 避免与 running 竞态：若正在跑，排队到下一 tick 用 notice 提示
+      if (runningRef.current) {
+        setItems((prev) =>
+          addNotice(
+            prev,
+            'error',
+            `Shortcut "/${meta.command}" could not start — agent is already running. Try again when idle.`,
+          ),
+        );
+        return;
+      }
+      sendRef.current?.(
+        `[Shortcut: ${meta.title}]\n${prompt}`,
+      );
+    });
+
+    // 定时任务队列：侧栏打开时 drain。
+    // 规则：busy → 全部写回；idle → 只发第一条，剩余写回（turn 结束后再 pull）。
+    const pullSchedules = () => {
+      void drainQueue().then(async (items) => {
+        if (items.length === 0) return;
+        if (runningRef.current) {
+          await requeueFront(items);
+          setItems((prev) =>
+            addNotice(
+              prev,
+              'info',
+              items.length === 1
+                ? `Scheduled task "${items[0].title}" is waiting — agent busy.`
+                : `${items.length} scheduled tasks are waiting — agent busy.`,
+            ),
+          );
+          return;
+        }
+        const [first, ...rest] = items;
+        if (rest.length) await requeueFront(rest);
+        sendRef.current?.(`[Scheduled: ${first.title}]\n${first.prompt}`);
+      });
+    };
+    pullSchedulesRef.current = pullSchedules;
+    pullSchedules();
+    const onStorage = (
+      changes: { [key: string]: chrome.storage.StorageChange },
+      area: string,
+    ) => {
+      if (area === 'session' && changes.schedule_queue) pullSchedules();
+    };
+    chrome.storage.onChanged.addListener(onStorage);
+
     const onActivated = () => void syncTab();
     /*
      * 类型是 `OnUpdatedInfo`，不是 `TabChangeInfo` —— 后者是 @types/chrome
@@ -116,6 +189,9 @@ export function useSession(): SessionState {
       chrome.tabs.onActivated.removeListener(onActivated);
       chrome.tabs.onUpdated.removeListener(onUpdated);
       chrome.windows.onFocusChanged.removeListener(onFocus);
+      chrome.storage.onChanged.removeListener(onStorage);
+      setShortcutRunner(null);
+      pullSchedulesRef.current = null;
       port.disconnect();
     };
   }, [syncTab]);
@@ -179,9 +255,10 @@ export function useSession(): SessionState {
   }, []);
 
   const send = useCallback(
-    (text: string) => {
+    (text: string, attachments?: OutgoingAttachment[]) => {
       const trimmed = text.trim();
-      if (!trimmed || runningRef.current) return;
+      const files = attachments ?? [];
+      if ((!trimmed && files.length === 0) || runningRef.current) return;
 
       if (!hasUsableCredentials(peekSettings())) {
         setItems((prev) =>
@@ -198,11 +275,58 @@ export function useSession(): SessionState {
         return;
       }
 
+      const chipNote =
+        files.length === 0
+          ? ''
+          : files
+              .map((f) =>
+                f.kind === 'image'
+                  ? `[Attached image imageId=${f.id} filename=${f.name}]`
+                  : `[Attached file fileId=${f.id} name=${f.name} mime=${f.mimeType} — use file_upload with this fileId]`,
+              )
+              .join('\n');
+      const displayText = [trimmed, chipNote].filter(Boolean).join('\n');
+
       setItems((prev) => [
         ...prev,
-        { kind: 'user', id: nextId('usr'), text: trimmed, at: Date.now() },
+        { kind: 'user', id: nextId('usr'), text: displayText, at: Date.now() },
       ]);
-      apiMessages.current.push({ role: 'user', content: trimmed });
+
+      // API content：文本 + 图片 block（文件只进 catalog + 文本 note）
+      type ContentPart =
+        | { type: 'text'; text: string }
+        | {
+            type: 'image';
+            source: {
+              type: 'base64';
+              media_type: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+              data: string;
+            };
+          };
+
+      const content: ContentPart[] = [];
+      const body = [trimmed, chipNote].filter(Boolean).join('\n\n');
+      if (body) content.push({ type: 'text', text: body });
+      for (const f of files) {
+        if (f.kind !== 'image') continue;
+        const media_type = (
+          f.mimeType === 'image/jpeg' ||
+          f.mimeType === 'image/webp' ||
+          f.mimeType === 'image/gif' ||
+          f.mimeType === 'image/png'
+            ? f.mimeType
+            : 'image/png'
+        ) as 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+        content.push({
+          type: 'image',
+          source: { type: 'base64', media_type, data: f.data },
+        });
+      }
+
+      apiMessages.current.push({
+        role: 'user',
+        content: content.length === 1 && content[0].type === 'text' ? content[0].text : content,
+      });
 
       const ac = new AbortController();
       abortRef.current = ac;
@@ -228,6 +352,8 @@ export function useSession(): SessionState {
           abortRef.current = null;
           setItems((prev) => sealStreaming(dropEmptyText(prev)));
           void syncTab();
+          // 上一条 turn 结束后再消费排队的定时任务
+          pullSchedulesRef.current?.();
         });
     },
     [tab, handleEvent, syncTab],
@@ -249,6 +375,8 @@ export function useSession(): SessionState {
     setUsage({ inputTokens: 0, outputTokens: 0 });
     setAwaiting(false);
     clearTodos();
+    clearSessionMedia();
+    resetAgentGroup();
     void cleanupTools();
   }, []);
 
@@ -259,6 +387,8 @@ export function useSession(): SessionState {
     },
     [],
   );
+
+  sendRef.current = send;
 
   return { items, running, awaitingPermission, usage, tab, send, stop, reset, answer };
 }

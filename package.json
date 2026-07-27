@@ -9,6 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "build:only": "vite build",
     "typecheck": "tsc --noEmit",
+    "gen:i18n": "node scripts/gen-i18n-from-official.mjs",
+    "gen:locales": "node scripts/gen-chrome-locales.mjs",
     "preview": "vite preview",
     "zip": "cd dist && zip -r ../my-agent-extension.zip . -x '.*'"
   },

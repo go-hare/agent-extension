@@ -6,9 +6,9 @@
  *
  *  - 用户消息是 `px-4 py-3 bg-bg-300 rounded-[14px]`
  *    —— 不是 bg-bg-200，也不是 rounded-xl（rounded-xl = 12px，原版是 14px）。
- *  - 助手消息**完全没有气泡/背景**，只有 `max-w-4xl claude-response w-full break-words`。
- *    本项目把 `claude-response` 改名成 `agent-response`（同一份 CSS 定义），
- *    这是唯一有意的偏差 —— 类名带产品名不合适。
+ *  - 助手消息**完全没有气泡/背景**，官方为
+ *    `max-w-4xl claude-response w-full break-words` +
+ *    `font-claude-response text-sm leading-[1.65rem] …`（逐字）。
  *  - 折叠阈值 500 字符、折叠高度 300px、渐变 `from-bg-300`、
  *    展开按钮 `border-[0.5px] border-[hsl(var(--border-400)/0.5)]`，均同原版。
  */
@@ -71,14 +71,8 @@ export function UserMessage({ item }: { item: UserItem }) {
 export function AssistantMessage({ item }: { item: AssistantTextItem }) {
   return (
     <div className="flex items-start group">
-      <div className="max-w-4xl agent-response w-full break-words">
-        {/*
-          原版的行内文本变体：
-          font-claude-response text-sm leading-[1.65rem] text-text-100
-          [&_a]:!underline [&_a]:text-brand-100 [&_p]:!text-sm [&_p]:text-text-100
-          [&_ul]:text-sm [&_ol]:text-sm
-        */}
-        <div className="font-agent-response text-sm leading-[1.65rem] text-text-100 [&_a]:!underline [&_a]:text-brand-100 [&_p]:!text-sm [&_p]:text-text-100 [&_ul]:text-sm [&_ol]:text-sm">
+      <div className="max-w-4xl claude-response w-full break-words">
+        <div className="font-claude-response text-sm leading-[1.65rem] text-text-100 [&_a]:!underline [&_a]:text-brand-100 [&_p]:!text-sm [&_p]:text-text-100 [&_ul]:text-sm [&_ol]:text-sm">
           <Markdown text={item.text} />
           {/* 流式光标。inline-block + 固定尺寸，避免行高抖动。 */}
           {item.streaming ? (

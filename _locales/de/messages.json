@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "Claude for Chrome",
+    "description": "Extension name shown in chrome://extensions and the toolbar."
+  },
+  "extDescription": {
+    "message": "Browser-Agent — liest Seiten und handelt in Ihrem Namen, mit Freigabe pro Aktion.",
+    "description": "Extension description shown in chrome://extensions."
+  },
+  "actionTitle": {
+    "message": "Claude öffnen",
+    "description": "Tooltip on the toolbar button."
+  },
+  "commandTogglePanel": {
+    "message": "Claude-Seitenleiste umschalten",
+    "description": "Label for the keyboard shortcut in chrome://extensions/shortcuts."
+  }
+}

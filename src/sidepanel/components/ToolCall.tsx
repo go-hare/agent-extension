@@ -1,62 +1,103 @@
 /**
- * 工具调用行。
+ * 工具调用行 — className 对齐官方 ToolUseRow / CollapsibleToolUseRow
+ * （sidepanel-CEYFzMrx.js Yi / Ji）。
  *
- * 默认**折叠成一行**，点开才显示入参和结果。理由不是省地方，是可读性：
- * 一次 "在 GitHub 上找到那个 PR" 的任务可能有 20 次工具调用，全展开的话
- * 用户根本看不到 agent 到底说了什么。
+ * 外壳:
+ *   ease-out rounded-lg border-[0.5px] flex flex-col font-ui leading-normal
+ *   my-3 border-border-300 (+ hover / expanded bg)
+ * 行按钮:
+ *   group/row flex flex-row items-center rounded-lg px-2.5 w-full py-2
+ *   text-text-300 … hover:text-text-200
  *
- * 但**出错的调用默认展开** —— 错误是用户唯一需要立刻行动的信息。
+ * 默认折叠；出错默认展开。
  */
 
 import { useState } from 'react';
-import { CaretDown, CaretRight, CheckIcon, CloseIcon, SpinnerIcon } from './icons';
+import { CaretDown, CheckIcon, CloseIcon, SpinnerIcon } from './icons';
 import { cn } from './cn';
 import { describeCall } from '../toolDisplay';
 import type { ToolItem } from '../state/transcript';
 
-export function ToolCall({ item }: { item: ToolItem }) {
+export function ToolCall({
+  item,
+  /** TimelineGroup 内嵌时去掉外层卡片边框（官方 renderMode=TimelineGroup） */
+  embedded = false,
+}: {
+  item: ToolItem;
+  embedded?: boolean;
+}) {
   const { Icon, label } = describeCall(item.name, item.input);
   const [expanded, setExpanded] = useState(item.status === 'error');
 
   const duration =
     item.endedAt !== undefined ? ((item.endedAt - item.startedAt) / 1000).toFixed(1) : null;
+  const running = item.status === 'running';
 
-  return (
-    <div className="my-0.5">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className={cn(
-          'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors',
-          'hover:bg-bg-200',
-        )}
-        aria-expanded={expanded}
-      >
-        {expanded ? (
-          <CaretDown size={12} className="shrink-0 text-text-400" />
-        ) : (
-          <CaretRight size={12} className="shrink-0 text-text-400" />
-        )}
-
-        <Icon size={14} className="shrink-0 text-text-300" />
-
-        <span
+  const rowBtn = (
+    <button
+      type="button"
+      onClick={() => setExpanded((v) => !v)}
+      aria-expanded={expanded}
+      className={cn(
+        'group/row flex flex-row items-center rounded-lg px-2.5 w-full py-2 justify-between',
+        'text-text-300 cursor-pointer transition-colors duration-200 hover:text-text-200',
+      )}
+    >
+      <div className="flex flex-row items-center gap-2 min-w-0 flex-1">
+        {!embedded ? (
+          <div className="flex items-center justify-center text-text-500 shrink-0">
+            <Icon size={16} />
+          </div>
+        ) : null}
+        <div
           className={cn(
-            'font-small min-w-0 flex-1 truncate text-[0.8125rem]',
-            item.status === 'error' ? 'text-danger-100' : 'text-text-200',
+            'text-left truncate w-0 flex-grow',
+            item.status === 'error' ? 'text-danger-100' : 'text-text-500',
+            running && 'status-shimmer',
           )}
         >
           {label}
-        </span>
+        </div>
+      </div>
 
-        <StatusMark item={item} />
-
+      <div className="flex flex-row items-center gap-1.5 shrink-0">
         {duration && item.status !== 'running' ? (
-          <span className="font-small shrink-0 text-[0.6875rem] text-text-500">{duration}s</span>
+          <p className="pl-1 text-text-500 font-small shrink-0 whitespace-nowrap">{duration}s</p>
         ) : null}
-      </button>
+        <StatusMark item={item} />
+        <span
+          className={cn(
+            'inline-flex transition-transform',
+            expanded ? 'rotate-180' : 'rotate-0',
+          )}
+        >
+          <CaretDown className="text-text-300" size={16} />
+        </span>
+      </div>
+    </button>
+  );
 
+  const body = (
+    <>
+      {rowBtn}
       {expanded ? <ToolDetail item={item} /> : null}
+    </>
+  );
+
+  if (embedded) {
+    return <div className="w-full">{body}</div>;
+  }
+
+  return (
+    <div
+      className={cn(
+        'ease-out rounded-lg border-[0.5px] flex flex-col font-ui leading-normal my-3 border-border-300',
+        'mt-3 mb-3',
+        !expanded && 'hover:bg-bg-200',
+        expanded && 'bg-bg-000 shadow-sm',
+      )}
+    >
+      {body}
     </div>
   );
 }
@@ -75,42 +116,50 @@ function ToolDetail({ item }: { item: ToolItem }) {
   const images = item.result?.images ?? [];
 
   return (
-    <div className="ml-6 mt-1 space-y-2 border-l-[0.5px] border-border-300 pl-3">
-      <Block title="Input">
-        <Pre text={safeJson(item.input)} />
-      </Block>
+    <div className="overflow-hidden">
+      <div
+        onClick={() => {
+          /* collapse handled by header */
+        }}
+        className="rounded-lg border-[0.5px] border-border-300 bg-bg-000 mx-2 mb-2 cursor-default"
+      >
+        <div className="p-2 flex flex-col gap-2 max-h-[200px] overflow-y-auto [&_pre]:!text-xs [&_code]:!text-xs">
+          <Block title="Input">
+            <Pre text={safeJson(item.input)} />
+          </Block>
 
-      {item.result?.error ? (
-        <Block title="Error" tone="danger">
-          <Pre text={item.result.error} tone="danger" />
-        </Block>
-      ) : null}
+          {item.result?.error ? (
+            <Block title="Error" tone="danger">
+              <Pre text={item.result.error} tone="danger" />
+            </Block>
+          ) : null}
 
-      {item.result?.output ? (
-        <Block title="Output">
-          {/*
-            工具输出可能来自页面（a11y 树、console、网络）。
-            **一律当纯文本渲染**，不过 Markdown —— 页面能控制这段内容，
-            让它变成可点链接就等于把注入面延伸到侧栏 UI 上。
-          */}
-          <Pre text={clip(item.result.output)} />
-        </Block>
-      ) : null}
+          {item.result?.output ? (
+            <Block title="Output">
+              {/*
+                工具输出可能来自页面（a11y 树、console、网络）。
+                **一律当纯文本渲染**，不过 Markdown。
+              */}
+              <Pre text={clip(item.result.output)} />
+            </Block>
+          ) : null}
 
-      {images.length > 0 ? (
-        <Block title={images.length === 1 ? 'Screenshot' : `${images.length} screenshots`}>
-          <div className="flex flex-col gap-1.5">
-            {images.map((img, i) => (
-              <img
-                key={i}
-                src={`data:${img.mediaType};base64,${img.data}`}
-                alt="Screenshot sent to the model"
-                className="w-full rounded-lg border-[0.5px] border-border-300"
-              />
-            ))}
-          </div>
-        </Block>
-      ) : null}
+          {images.length > 0 ? (
+            <Block title={images.length === 1 ? 'Screenshot' : `${images.length} screenshots`}>
+              <div className="flex flex-col gap-1.5">
+                {images.map((img, i) => (
+                  <img
+                    key={i}
+                    src={`data:${img.mediaType};base64,${img.data}`}
+                    alt="Screenshot sent to the model"
+                    className="w-full rounded-lg border-[0.5px] border-border-300"
+                  />
+                ))}
+              </div>
+            </Block>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }
@@ -143,7 +192,7 @@ function Pre({ text, tone }: { text: string; tone?: 'danger' }) {
   return (
     <pre
       className={cn(
-        'max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border-[0.5px] border-border-300 bg-bg-200 p-2 font-mono text-[0.6875rem] leading-relaxed',
+        'overflow-x-auto whitespace-pre rounded-lg border-0.5 border-border-400 bg-bg-000/50 p-3.5 font-mono text-sm',
         tone === 'danger' ? 'text-danger-100' : 'text-text-300',
       )}
     >

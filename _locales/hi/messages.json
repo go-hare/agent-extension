@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "Claude for Chrome",
+    "description": "Extension name shown in chrome://extensions and the toolbar."
+  },
+  "extDescription": {
+    "message": "ब्राउज़र एजेंट — पेज पढ़ता है और प्रत्येक क्रिया की अनुमति के साथ आपके लिए काम करता है।",
+    "description": "Extension description shown in chrome://extensions."
+  },
+  "actionTitle": {
+    "message": "Claude खोलें",
+    "description": "Tooltip on the toolbar button."
+  },
+  "commandTogglePanel": {
+    "message": "Claude साइड पैनल टॉगल करें",
+    "description": "Label for the keyboard shortcut in chrome://extensions/shortcuts."
+  }
+}

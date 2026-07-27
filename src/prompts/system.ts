@@ -107,6 +107,22 @@ cheapest tool that answers the question:
   Synthetic typing does not work reliably on those.
 - After an action that changes the page, verify before continuing. A click that
   silently failed and a click that worked look identical from your side.
+- **Never click file inputs or "Choose file" buttons.** The native file picker is
+  invisible to you. Use **upload_image** (pass \`imageId\` from a computer
+  screenshot output or a user attachment note) or **file_upload** (base64
+  \`files\` or catalog \`fileIds\` + a ref from read_page/find).
+
+### Batching
+
+- Prefer **browser_batch** when you can predict two or more steps (click→type→key,
+  form fills, multi-step navigation) **and** those tools are already allowed (or
+  the user is in Act-without-asking mode). It is one round trip and much faster.
+- browser_batch cannot be nested. Actions run sequentially and stop on the first
+  error.
+- Steps that still need a **first-time permission grant** fail inside a batch —
+  call that tool once standalone so the user is prompted, then batch the rest.
+- Coordinates you write inside a batch refer to the screenshot taken **before**
+  that batch call (mid-batch screenshots are for verification only).
 
 ### Tabs
 
@@ -122,6 +138,14 @@ cheapest tool that answers the question:
   you start. Present domains and approach; wait for approval.
 - **todowrite** — keep a short checklist visible in the side panel for multi-step
   tasks. Replace the whole list each call. Mark one item \`in_progress\` at a time.
+
+### GIF and shortcuts
+
+- **gif_creator** — \`start_recording\` before a short demo, act (frames are captured
+  automatically on computer/navigate), \`stop_recording\`, then \`export\` with
+  \`download: true\` (and/or a drop coordinate). Max 50 frames.
+- **shortcuts_list** / **shortcuts_execute** — list or run saved workflows. Execute
+  starts a new turn in this side panel with the shortcut prompt.
 
 ### javascript_tool
 

@@ -26,12 +26,14 @@ import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Placeholder } from '@tiptap/extensions';
 import { cn } from './cn';
-import { CaretDown, CheckIcon, SendIcon, StopIcon } from './icons';
+import { CaretDown, CheckIcon, MousePointerClick, Paperclip, SendIcon, StopIcon, X } from './icons';
 import { SkipConfirm } from './SkipConfirm';
 import type { Settings } from '@/shared/types';
+import { putUserFile, putUserImage } from '@/media/catalog';
+import type { OutgoingAttachment } from '@/sidepanel/state/useSession';
+import { useUi } from '@/i18n/UiLocaleContext';
 
-/** 原版的轮播占位符文案与间隔。 */
-const ROTATING = ['How can I help you today?', 'Type / for commands'];
+/** 原版的轮播占位符间隔。 */
 const ROTATE_MS = 3000;
 
 export interface SlashCommand {
@@ -51,10 +53,32 @@ export interface ComposerProps {
   blocked: boolean;
   permissionMode: Settings['permissionMode'];
   onPermissionModeChange: (mode: Settings['permissionMode']) => void;
-  onSend: (text: string) => void;
+  onSend: (text: string, attachments?: OutgoingAttachment[]) => void;
   onStop: () => void;
   /** `/` 命令菜单项（clear / settings / summarize…） */
   commands: SlashCommand[];
+  /** Open Teach Claude / Record workflow. */
+  onTeach?: () => void;
+}
+
+const MAX_ATTACH = 5;
+const MAX_ATTACH_BYTES = 5 * 1024 * 1024;
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== 'string') {
+        reject(new Error('Failed to read file'));
+        return;
+      }
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
 }
 
 export function Composer({
@@ -66,7 +90,9 @@ export function Composer({
   onSend,
   onStop,
   commands,
+  onTeach,
 }: ComposerProps) {
+  const ui = useUi();
   const [text, setText] = useState('');
   const [rotation, setRotation] = useState(0);
   const [modeOpen, setModeOpen] = useState(false);
@@ -74,7 +100,15 @@ export function Composer({
   const [slashQuery, setSlashQuery] = useState('');
   const [slashIndex, setSlashIndex] = useState(0);
   const [skipConfirmOpen, setSkipConfirmOpen] = useState(false);
+  const [attachments, setAttachments] = useState<OutgoingAttachment[]>([]);
+  const [attachError, setAttachError] = useState<string | null>(null);
   const modeRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const rotatingPlaceholders = useMemo(
+    () => [ui.howCanIHelp, ui.typeSlashCommands],
+    [ui.howCanIHelp, ui.typeSlashCommands],
+  );
 
   // 占位符只在"空对话 + 没在跑"时轮播。跑起来之后再换字会让人以为
   // 输入框状态变了。
@@ -82,25 +116,29 @@ export function Composer({
 
   useEffect(() => {
     if (!rotating) return;
-    const t = window.setInterval(() => setRotation((i) => (i + 1) % ROTATING.length), ROTATE_MS);
-    return () => window.clearInterval(t);
-  }, [rotating]);
+    const timer = window.setInterval(
+      () => setRotation((i) => (i + 1) % rotatingPlaceholders.length),
+      ROTATE_MS,
+    );
+    return () => window.clearInterval(timer);
+  }, [rotating, rotatingPlaceholders.length]);
 
   const placeholder = useMemo(() => {
-    if (blocked) return 'Answer the permission request above';
-    if (!empty) return 'Reply to the agent';
-    return ROTATING[rotation] ?? ROTATING[0];
-  }, [blocked, empty, rotation]);
+    if (blocked) return ui.answerPermissionAbove;
+    if (!empty) return ui.replyToClaude;
+    return rotatingPlaceholders[rotation] ?? rotatingPlaceholders[0];
+  }, [blocked, empty, rotation, rotatingPlaceholders, ui.answerPermissionAbove, ui.replyToClaude]);
 
   const disabled = running || blocked;
 
   const submit = useCallback(
     (value: string) => {
       const trimmed = value.trim();
-      if (!trimmed) return false;
+      const pending = attachments;
+      if (!trimmed && pending.length === 0) return false;
       // 斜杠命令：有 run 且无 insert → 本地副作用；有 insert → 展开成提示再发。
       // 避免用户手敲 `/summarize` 回车时，把字面量发给模型。
-      if (trimmed.startsWith('/')) {
+      if (trimmed.startsWith('/') && pending.length === 0) {
         const name = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase() ?? '';
         const cmd = commands.find((c) => c.id === name || c.label.toLowerCase() === name);
         if (cmd) {
@@ -114,11 +152,77 @@ export function Composer({
           }
         }
       }
-      onSend(trimmed);
+      onSend(trimmed, pending.length ? pending : undefined);
+      setAttachments([]);
+      setAttachError(null);
       return true;
     },
-    [onSend, commands],
+    [onSend, commands, attachments],
   );
+
+  const onPickFiles = useCallback(async (list: FileList | null) => {
+    if (!list || list.length === 0) return;
+    setAttachError(null);
+    const incoming = Array.from(list);
+    const next: OutgoingAttachment[] = [];
+    let error: string | null = null;
+
+    for (const file of incoming) {
+      if (attachments.length + next.length >= MAX_ATTACH) {
+        error = `You can attach at most ${MAX_ATTACH} files per message.`;
+        break;
+      }
+      if (file.size > MAX_ATTACH_BYTES) {
+        error = `"${file.name}" is larger than 5MB.`;
+        continue;
+      }
+      try {
+        const data = await readFileAsBase64(file);
+        const isImage = file.type.startsWith('image/');
+        if (isImage) {
+          const mediaType = (
+            file.type === 'image/jpeg' ||
+            file.type === 'image/webp' ||
+            file.type === 'image/gif' ||
+            file.type === 'image/png'
+              ? file.type
+              : 'image/png'
+          ) as 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+          const entry = putUserImage({
+            data,
+            mediaType,
+            filename: file.name,
+          });
+          next.push({
+            kind: 'image',
+            id: entry.id,
+            name: file.name,
+            mimeType: mediaType,
+            data,
+          });
+        } else {
+          const entry = putUserFile({
+            data,
+            name: file.name,
+            mimeType: file.type || 'application/octet-stream',
+          });
+          next.push({
+            kind: 'file',
+            id: entry.id,
+            name: entry.name,
+            mimeType: entry.mimeType,
+            data,
+          });
+        }
+      } catch {
+        error = `Could not read "${file.name}".`;
+      }
+    }
+
+    if (next.length) setAttachments((prev) => [...prev, ...next].slice(0, MAX_ATTACH));
+    if (error) setAttachError(error);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [attachments.length]);
 
   const filteredCommands = useMemo(() => {
     const q = slashQuery.toLowerCase();
@@ -306,13 +410,13 @@ export function Composer({
     onPermissionModeChange('skip');
   };
 
-  const hasText = text.trim().length > 0;
-  const modeLabel = permissionMode === 'skip' ? 'Act without asking' : 'Ask before acting';
+  const hasText = text.trim().length > 0 || attachments.length > 0;
+  const modeLabel = permissionMode === 'skip' ? ui.actWithoutAsking : ui.askBeforeActing;
+  const isSkip = permissionMode === 'skip';
   // 原版 skip 模式下发送键变成金色，作为「免确认」的视觉提示。
-  const sendBtnClass =
-    permissionMode === 'skip'
-      ? 'inline-flex items-center justify-center relative shrink-0 select-none disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none disabled:drop-shadow-none font-medium transition-colors h-7 w-7 rounded-lg active:scale-95 bg-[#BF8534] hover:bg-[#A06F2C] text-white'
-      : 'inline-flex items-center justify-center relative shrink-0 select-none disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none disabled:drop-shadow-none font-medium transition-colors h-7 w-7 rounded-lg active:scale-95 bg-brand-000 hover:bg-brand-200 text-oncolor-100';
+  const sendBtnClass = isSkip
+    ? 'inline-flex items-center justify-center relative shrink-0 select-none disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none disabled:drop-shadow-none font-medium transition-colors h-7 w-7 rounded-lg active:scale-95 bg-[#BF8534] hover:bg-[#A06F2C] text-white'
+    : 'inline-flex items-center justify-center relative shrink-0 select-none disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none disabled:drop-shadow-none font-medium transition-colors h-7 w-7 rounded-lg active:scale-95 bg-brand-000 hover:bg-brand-200 text-oncolor-100';
 
   return (
     <>
@@ -349,6 +453,32 @@ export function Composer({
           ) : null}
 
           <div className="px-4 pt-4 pb-2">
+            {attachments.length > 0 ? (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {attachments.map((a) => (
+                  <span
+                    key={a.id}
+                    className="inline-flex max-w-full items-center gap-1 rounded-md border-[0.5px] border-border-300 bg-bg-100 px-2 py-0.5 font-small text-[0.6875rem] text-text-300"
+                  >
+                    <span className="truncate">{a.kind === 'image' ? 'img' : 'file'} {a.name}</span>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${a.name}`}
+                      className="shrink-0 rounded p-0.5 hover:bg-bg-200"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setAttachments((prev) => prev.filter((x) => x.id !== a.id));
+                      }}
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {attachError ? (
+              <div className="mb-1 font-small text-[0.6875rem] text-danger-000">{attachError}</div>
+            ) : null}
             <div className="relative">
               <EditorContent editor={editor} />
             </div>
@@ -367,13 +497,13 @@ export function Composer({
                   e.stopPropagation();
                   setModeOpen((v) => !v);
                 }}
-                className="hide-focus-ring flex items-center gap-1 rounded-md px-1.5 py-1 font-small text-[0.6875rem] text-text-500 transition-colors hover:bg-bg-200 hover:text-text-300"
+                className="hide-focus-ring flex items-center gap-1 pl-1 pr-1 py-1.5 text-sm text-text-200 rounded-md transition-colors hover:bg-bg-200 cursor-pointer"
                 aria-haspopup="listbox"
                 aria-expanded={modeOpen}
-                aria-label={`Permission mode: ${modeLabel}`}
+                aria-label={ui.permissionModeAria(modeLabel)}
               >
-                <span>{modeLabel}</span>
-                <CaretDown size={10} />
+                <span className="text-xs">{modeLabel}</span>
+                <CaretDown size={10} className="text-text-300" />
               </button>
 
               {modeOpen ? (
@@ -383,14 +513,14 @@ export function Composer({
                 >
                   <ModeOption
                     selected={permissionMode === 'ask'}
-                    title="Ask before acting"
-                    description="Claude plans its approach before taking actions."
+                    title={ui.askBeforeActing}
+                    description={ui.askBeforeActingDesc}
                     onClick={() => requestModeChange('ask')}
                   />
                   <ModeOption
                     selected={permissionMode === 'skip'}
-                    title="Act without asking"
-                    description="Claude works without pausing for approval."
+                    title={ui.actWithoutAsking}
+                    description={ui.actWithoutAskingDesc}
                     onClick={() => requestModeChange('skip')}
                   />
                 </div>
@@ -398,11 +528,45 @@ export function Composer({
             </div>
 
             <div className="flex items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => void onPickFiles(e.target.files)}
+              />
+              {onTeach ? (
+                <button
+                  type="button"
+                  aria-label={ui.teachClaude}
+                  disabled={running}
+                  title={ui.teachClaude}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onTeach();
+                  }}
+                  className="inline-flex items-center justify-center relative shrink-0 select-none font-medium h-7 w-7 rounded-lg active:scale-95 text-text-300 hover:text-text-200 hover:bg-bg-200 transition-colors disabled:opacity-50"
+                >
+                  <MousePointerClick size={16} />
+                </button>
+              ) : null}
+              <button
+                type="button"
+                aria-label={ui.attachFiles}
+                disabled={disabled || attachments.length >= MAX_ATTACH}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fileInputRef.current?.click();
+                }}
+                className="inline-flex items-center justify-center relative shrink-0 select-none font-medium h-7 w-7 rounded-lg active:scale-95 text-text-300 hover:text-text-200 hover:bg-bg-200 transition-colors disabled:opacity-50"
+              >
+                <Paperclip size={16} />
+              </button>
               {running ? (
                 <button
                   type="button"
                   data-test-id="stop-button"
-                  aria-label="Stop message"
+                  aria-label={ui.stopMessage}
                   onClick={onStop}
                   className="inline-flex items-center justify-center relative shrink-0 select-none font-medium h-7 w-7 rounded-lg active:scale-95 text-text-300 hover:text-text-200 hover:bg-bg-200 transition-colors"
                 >
@@ -412,7 +576,7 @@ export function Composer({
                 <button
                   type="button"
                   data-test-id="send-button"
-                  aria-label="Send message"
+                  aria-label={ui.sendMessage}
                   disabled={!hasText || disabled}
                   onClick={onClickSend}
                   className={sendBtnClass}
@@ -467,16 +631,17 @@ function ModeOption({
   );
 }
 
-/** 状态条。running 时显示在输入框上方。 */
+/** 状态条。running 时显示在输入框上方。官方 shimmer 用 font-claude-response。 */
 export function StatusLine({ label, steps }: { label: string; steps: number }) {
+  const ui = useUi();
   return (
-    <div className={cn('flex items-center gap-2 px-4 pb-1.5')}>
-      <span className="text-sm italic font-agent-response relative inline-block mb-1 status-shimmer">
+    <div className="group/status flex items-center gap-2 px-4 pb-1.5 py-1 text-sm">
+      <span className="text-sm italic font-claude-response relative inline-block mb-1 status-shimmer">
         {label}
       </span>
       {steps > 0 ? (
-        <span className="font-small text-[0.6875rem] text-text-500 mb-1">
-          {steps} {steps === 1 ? 'step' : 'steps'}
+        <span className="font-small text-text-500 mb-1 shrink-0">
+          {steps === 1 ? ui.stepsOne : ui.stepsMany(steps)}
         </span>
       ) : null}
     </div>

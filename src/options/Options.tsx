@@ -30,6 +30,21 @@ import { permissionManager } from '@/permissions/manager';
 import { PERMISSION_LABEL } from '@/permissions/rules';
 import { loadSettings, normalizeBaseUrl, saveSettings } from '@/storage/settings';
 import { DEFAULT_SETTINGS, type Permission, type Settings } from '@/shared/types';
+import {
+  deleteShortcut,
+  listShortcuts,
+  saveShortcut,
+  type Shortcut,
+} from '@/shortcuts/store';
+import {
+  createSchedule,
+  deleteSchedule,
+  listSchedules,
+  setScheduleEnabled,
+  type Schedule,
+} from '@/scheduling/store';
+import { UiLocaleProvider, useUi } from '@/i18n/UiLocaleContext';
+import { getUiStrings, UI_LOCALES } from '@/i18n/ui';
 
 type Probe =
   | { state: 'idle' }
@@ -45,6 +60,10 @@ export function Options() {
   const [modelProbe, setModelProbe] = useState<Probe>({ state: 'idle' });
   const [grants, setGrants] = useState<Array<{ host: string; permissions: Permission[] }>>([]);
   const [flash, setFlash] = useState<string | null>(null);
+  const [shortcuts, setShortcuts] = useState<Shortcut[]>([]);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [scDraft, setScDraft] = useState({ command: '', title: '', description: '', prompt: '' });
+  const [schDraft, setSchDraft] = useState({ title: '', prompt: '', everyMinutes: '15' });
 
   useEffect(() => {
     void (async () => {
@@ -52,10 +71,17 @@ export function Options() {
       setDraft(s);
       setSaved(s);
       applyMode(s.mode);
+      document.title = getUiStrings(s.locale).optionsTitle;
       await permissionManager.init();
       setGrants(permissionManager.listGrants());
+      setShortcuts(await listShortcuts());
+      setSchedules(await listSchedules());
     })();
   }, []);
+
+  useEffect(() => {
+    document.title = getUiStrings(draft.locale).optionsTitle;
+  }, [draft.locale]);
 
   const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(saved), [draft, saved]);
 
@@ -71,7 +97,7 @@ export function Options() {
     setDraft(stored);
     setSaved(stored);
     applyMode(stored.mode);
-    setFlash('Saved.');
+    setFlash(getUiStrings(stored.locale).saved);
     window.setTimeout(() => setFlash(null), 2000);
   }, [draft]);
 
@@ -120,17 +146,98 @@ export function Options() {
   }, [draft]);
 
   return (
-    <div className="mx-auto max-w-2xl px-6 py-8">
-      <h1 className="font-heading mb-1 text-text-100">Agent settings</h1>
-      <p className="font-base mb-8 text-sm text-text-400">
-        This extension talks to an Anthropic-compatible endpoint that you choose. Nothing is sent
-        anywhere else.
-      </p>
+    <UiLocaleProvider locale={draft.locale}>
+      <OptionsBody
+        draft={draft}
+        saved={saved}
+        dirty={dirty}
+        showKey={showKey}
+        setShowKey={setShowKey}
+        probe={probe}
+        modelProbe={modelProbe}
+        grants={grants}
+        setGrants={setGrants}
+        flash={flash}
+        shortcuts={shortcuts}
+        setShortcuts={setShortcuts}
+        schedules={schedules}
+        setSchedules={setSchedules}
+        scDraft={scDraft}
+        setScDraft={setScDraft}
+        schDraft={schDraft}
+        setSchDraft={setSchDraft}
+        patch={patch}
+        save={save}
+        revert={revert}
+        runTest={runTest}
+        loadModels={loadModels}
+      />
+    </UiLocaleProvider>
+  );
+}
 
-      <Section
-        title="API connection"
-        note="Point this at your own relay. The extension appends /v1 itself — enter the root URL."
-      >
+function OptionsBody({
+  draft,
+  dirty,
+  showKey,
+  setShowKey,
+  probe,
+  modelProbe,
+  grants,
+  setGrants,
+  flash,
+  shortcuts,
+  setShortcuts,
+  schedules,
+  setSchedules,
+  scDraft,
+  setScDraft,
+  schDraft,
+  setSchDraft,
+  patch,
+  save,
+  revert,
+  runTest,
+  loadModels,
+}: {
+  draft: Settings;
+  saved: Settings;
+  dirty: boolean;
+  showKey: boolean;
+  setShowKey: React.Dispatch<React.SetStateAction<boolean>>;
+  probe: Probe;
+  modelProbe: Probe;
+  grants: Array<{ host: string; permissions: Permission[] }>;
+  setGrants: React.Dispatch<
+    React.SetStateAction<Array<{ host: string; permissions: Permission[] }>>
+  >;
+  flash: string | null;
+  shortcuts: Shortcut[];
+  setShortcuts: React.Dispatch<React.SetStateAction<Shortcut[]>>;
+  schedules: Schedule[];
+  setSchedules: React.Dispatch<React.SetStateAction<Schedule[]>>;
+  scDraft: { command: string; title: string; description: string; prompt: string };
+  setScDraft: React.Dispatch<
+    React.SetStateAction<{ command: string; title: string; description: string; prompt: string }>
+  >;
+  schDraft: { title: string; prompt: string; everyMinutes: string };
+  setSchDraft: React.Dispatch<
+    React.SetStateAction<{ title: string; prompt: string; everyMinutes: string }>
+  >;
+  patch: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  save: () => Promise<void>;
+  revert: () => void;
+  runTest: () => Promise<void>;
+  loadModels: () => Promise<void>;
+}) {
+  const t = useUi();
+
+  return (
+    <div className="mx-auto max-w-2xl px-6 py-8">
+      <h1 className="font-heading mb-1 text-text-100">{t.optionsHeading}</h1>
+      <p className="font-base mb-8 text-sm text-text-400">{t.optionsIntro}</p>
+
+      <Section title={t.sectionApi} note={t.sectionApiNote}>
         <Field label="Base URL" hint="e.g. https://relay.example.com">
           <input
             type="url"
@@ -224,10 +331,7 @@ export function Options() {
         <ProbeLine probe={probe} />
       </Section>
 
-      <Section
-        title="Where the agent may act"
-        note="Leave the allow-list empty to permit any site. The block-list always wins."
-      >
+      <Section title={t.sectionWhere} note={t.sectionWhereNote}>
         <Field
           label="Only these sites"
           hint="One host per line. Subdomains are included automatically."
@@ -260,8 +364,8 @@ export function Options() {
           <div className="flex gap-2">
             {(
               [
-                { id: 'ask' as const, label: 'Ask before acting' },
-                { id: 'skip' as const, label: 'Act without asking' },
+                { id: 'ask' as const, label: t.askBeforeActing },
+                { id: 'skip' as const, label: t.actWithoutAsking },
               ] as const
             ).map((opt) => (
               <button
@@ -289,7 +393,7 @@ export function Options() {
         />
       </Section>
 
-      <Section title="Capabilities">
+      <Section title={t.sectionCapabilities}>
         <Toggle
           checked={draft.enableJavascriptTool}
           onChange={(v) => patch('enableJavascriptTool', v)}
@@ -301,7 +405,7 @@ export function Options() {
           checked={draft.enableBrowserBatch}
           onChange={(v) => patch('enableBrowserBatch', v)}
           label="Allow batching several actions into one call"
-          hint="Faster. Each action inside a batch still goes through its own permission check."
+          hint="Faster multi-step calls. Steps that still need a first-time permission grant will fail inside a batch — approve those tools once standalone, then batch the rest."
         />
         <Toggle
           checked={draft.soundEnabled}
@@ -311,8 +415,8 @@ export function Options() {
         />
       </Section>
 
-      <Section title="Appearance">
-        <Field label="Theme">
+      <Section title={t.sectionAppearance}>
+        <Field label={t.theme}>
           <div className="flex gap-2">
             {(['light', 'dark', 'system'] as const).map((m) => (
               <button
@@ -336,22 +440,48 @@ export function Options() {
           </div>
         </Field>
 
-        <Field label="Language" hint="Affects the wording the agent uses in its replies.">
+        <Field label={t.language} hint={t.languageHint}>
           <select
             value={draft.locale}
             onChange={(e) => patch('locale', e.target.value as Settings['locale'])}
-            className={cn(INPUT, 'max-w-[14rem]')}
+            className={cn(INPUT, 'max-w-[18rem]')}
           >
-            <option value="en-US">English</option>
-            <option value="zh-CN">简体中文</option>
+            {UI_LOCALES.map((opt) => (
+              <option key={opt.id} value={opt.id}>
+                {opt.label}
+              </option>
+            ))}
           </select>
         </Field>
       </Section>
 
-      <Section
-        title="Remembered permissions"
-        note="Sites where you chose “Always allow”. Revoking takes effect immediately."
-      >
+      <Section title={t.sectionTeach} note={t.sectionTeachNote}>
+        <Toggle
+          checked={draft.teachSpeechEnabled}
+          onChange={(v) => patch('teachSpeechEnabled', v)}
+          label={t.teachSpeechEnable}
+          hint={t.teachSpeechEnableHint}
+        />
+        <Field label={t.teachSpeechLangLabel} hint={t.teachSpeechLangHint}>
+          <input
+            type="text"
+            spellCheck={false}
+            autoComplete="off"
+            placeholder={draft.locale}
+            value={draft.teachSpeechLang}
+            onChange={(e) => patch('teachSpeechLang', e.target.value.trim())}
+            className={cn(INPUT, 'max-w-[12rem]')}
+          />
+        </Field>
+        <Toggle
+          checked={draft.teachCaptureFrames}
+          onChange={(v) => patch('teachCaptureFrames', v)}
+          label={t.teachCaptureFramesLabel}
+          hint={t.teachCaptureFramesHint}
+        />
+      </Section>
+
+      <Section title={t.sectionPermissions} note={t.sectionPermissionsNote}>
         {grants.length === 0 ? (
           <p className="font-base flex items-center gap-2 text-sm text-text-400">
             <ShieldIcon size={14} />
@@ -397,6 +527,165 @@ export function Options() {
         )}
       </Section>
 
+      <Section title={t.sectionShortcuts} note={t.sectionShortcutsNote}>
+        <div className="space-y-2">
+          {shortcuts.map((s) => (
+            <div
+              key={s.id}
+              className="flex items-start justify-between gap-3 rounded-lg border-[0.5px] border-border-300 bg-bg-000 px-3 py-2"
+            >
+              <div className="min-w-0">
+                <div className="font-base text-sm text-text-100">
+                  /{s.command} · {s.title}
+                </div>
+                <div className="font-small text-[0.6875rem] text-text-500">{s.description}</div>
+              </div>
+              <button
+                type="button"
+                aria-label={`Delete shortcut ${s.command}`}
+                onClick={() => {
+                  void deleteShortcut(s.id).then(async () => setShortcuts(await listShortcuts()));
+                }}
+                className="shrink-0 rounded-md p-1.5 text-text-300 transition-colors hover:bg-bg-300 hover:text-danger-100"
+              >
+                <CloseIcon size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 space-y-2 rounded-lg border-[0.5px] border-border-300 bg-bg-000 p-3">
+          <div className="font-base-bold text-sm text-text-100">Add shortcut</div>
+          <input
+            className={INPUT}
+            placeholder="command (e.g. summarize)"
+            value={scDraft.command}
+            onChange={(e) => setScDraft((d) => ({ ...d, command: e.target.value }))}
+          />
+          <input
+            className={INPUT}
+            placeholder="Title"
+            value={scDraft.title}
+            onChange={(e) => setScDraft((d) => ({ ...d, title: e.target.value }))}
+          />
+          <input
+            className={INPUT}
+            placeholder="Short description"
+            value={scDraft.description}
+            onChange={(e) => setScDraft((d) => ({ ...d, description: e.target.value }))}
+          />
+          <textarea
+            className={cn(INPUT, 'min-h-[4.5rem]')}
+            placeholder="Prompt body sent to the agent"
+            value={scDraft.prompt}
+            onChange={(e) => setScDraft((d) => ({ ...d, prompt: e.target.value }))}
+          />
+          <button
+            type="button"
+            className={BTN_GHOST}
+            disabled={!scDraft.command.trim() || !scDraft.prompt.trim()}
+            onClick={() => {
+              void saveShortcut({
+                command: scDraft.command,
+                title: scDraft.title || scDraft.command,
+                description: scDraft.description || scDraft.title || scDraft.command,
+                prompt: scDraft.prompt,
+              }).then(async () => {
+                setScDraft({ command: '', title: '', description: '', prompt: '' });
+                setShortcuts(await listShortcuts());
+              });
+            }}
+          >
+            Save shortcut
+          </button>
+        </div>
+      </Section>
+
+      <Section title={t.sectionSchedules} note={t.sectionSchedulesNote}>
+        <div className="space-y-2">
+          {schedules.length === 0 ? (
+            <p className="font-base text-sm text-text-400">No schedules yet.</p>
+          ) : (
+            schedules.map((s) => (
+              <div
+                key={s.id}
+                className="flex items-start justify-between gap-3 rounded-lg border-[0.5px] border-border-300 bg-bg-000 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="font-base text-sm text-text-100">
+                    {s.title} · every {s.everyMinutes} min {s.enabled ? '' : '(paused)'}
+                  </div>
+                  <div className="font-small line-clamp-2 text-[0.6875rem] text-text-500">
+                    {s.prompt}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    className={BTN_GHOST}
+                    onClick={() => {
+                      void setScheduleEnabled(s.id, !s.enabled).then(async () =>
+                        setSchedules(await listSchedules()),
+                      );
+                    }}
+                  >
+                    {s.enabled ? 'Pause' : 'Resume'}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Delete schedule ${s.title}`}
+                    onClick={() => {
+                      void deleteSchedule(s.id).then(async () => setSchedules(await listSchedules()));
+                    }}
+                    className="rounded-md p-1.5 text-text-300 transition-colors hover:bg-bg-300 hover:text-danger-100"
+                  >
+                    <CloseIcon size={14} />
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+        <div className="mt-3 space-y-2 rounded-lg border-[0.5px] border-border-300 bg-bg-000 p-3">
+          <div className="font-base-bold text-sm text-text-100">Add schedule</div>
+          <input
+            className={INPUT}
+            placeholder="Title"
+            value={schDraft.title}
+            onChange={(e) => setSchDraft((d) => ({ ...d, title: e.target.value }))}
+          />
+          <input
+            className={INPUT}
+            placeholder="Every N minutes (min 1)"
+            value={schDraft.everyMinutes}
+            onChange={(e) => setSchDraft((d) => ({ ...d, everyMinutes: e.target.value }))}
+          />
+          <textarea
+            className={cn(INPUT, 'min-h-[4.5rem]')}
+            placeholder="Prompt to run when the side panel is open"
+            value={schDraft.prompt}
+            onChange={(e) => setSchDraft((d) => ({ ...d, prompt: e.target.value }))}
+          />
+          <button
+            type="button"
+            className={BTN_GHOST}
+            disabled={!schDraft.title.trim() || !schDraft.prompt.trim()}
+            onClick={() => {
+              const mins = clampInt(schDraft.everyMinutes, 1, 24 * 60, 15);
+              void createSchedule({
+                title: schDraft.title.trim(),
+                prompt: schDraft.prompt.trim(),
+                everyMinutes: mins,
+              }).then(async () => {
+                setSchDraft({ title: '', prompt: '', everyMinutes: '15' });
+                setSchedules(await listSchedules());
+              });
+            }}
+          >
+            Create schedule
+          </button>
+        </div>
+      </Section>
+
       {/*
         保存条固定在底部。
         长表单里把 Save 放在页尾意味着用户改了顶部的一个开关后要滚到底 ——
@@ -410,11 +699,11 @@ export function Options() {
             disabled={!dirty}
             className={BTN_PRIMARY}
           >
-            Save changes
+            {t.saveChanges}
           </button>
           {dirty ? (
             <button type="button" onClick={revert} className={BTN_GHOST}>
-              Discard
+              {t.discard}
             </button>
           ) : null}
           {flash ? (
@@ -424,7 +713,7 @@ export function Options() {
             </span>
           ) : null}
           {dirty && !flash ? (
-            <span className="font-small text-sm text-text-400">Unsaved changes</span>
+            <span className="font-small text-sm text-text-400">{t.unsaved}</span>
           ) : null}
         </div>
       </div>

@@ -26,9 +26,10 @@ import { cn } from './cn';
 import { AssistantMessage, UserMessage } from './Message';
 import { PermissionBubble } from './PermissionBubble';
 import { ToolCall } from './ToolCall';
-import { AlertIcon, CaretDown } from './icons';
+import { AlertIcon } from './icons';
 import type { PermissionScope } from '@/shared/types';
 import type { TranscriptItem } from '../state/transcript';
+import { useUi } from '@/i18n/UiLocaleContext';
 
 /** 距底部多少像素以内算"贴着底部"。太小的话流式换行会把用户判成已滚开。 */
 const STICK_THRESHOLD = 64;
@@ -135,6 +136,7 @@ function renderRows(
  *   头按钮：expanded ? "Hide steps" : "{collapsedCount} step(s)"
  */
 function TimelineGroup({ tools }: { tools: TranscriptItem[] }) {
+  const t = useUi();
   const [expanded, setExpanded] = useState(false);
   const total = tools.length;
   const collapsible = total >= AUTO_COLLAPSE_MIN;
@@ -144,49 +146,34 @@ function TimelineGroup({ tools }: { tools: TranscriptItem[] }) {
   return (
     <div
       className={cn(
-        'flex flex-col font-ui leading-normal',
-        // 原版用 border-0.5（= 0.5px），不是 border-[0.5px]
-        'rounded-lg border-0.5 border-border-300 my-3 mt-3 mb-3',
+        // 对齐官方 ToolUseRow 外壳 + TimelineGroup 折叠头
+        'ease-out rounded-lg border-[0.5px] flex flex-col font-ui leading-normal my-3 border-border-300 mt-3 mb-3',
       )}
     >
       {showHeader ? (
-        <div className="flex items-center gap-1">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center">
-            <CaretDown
-              size={16}
-              className={cn(
-                'transition-transform text-text-300',
-                expanded ? 'rotate-0' : 'rotate-180',
-              )}
-            />
-          </span>
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            aria-expanded={expanded}
-            className="px-3 py-2 w-full text-left text-sm text-text-300"
-          >
-            {expanded
-              ? 'Hide steps'
-              : collapsedCount === 1
-                ? '1 step'
-                : `${collapsedCount} steps`}
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="px-3 py-2 w-full text-left text-sm text-text-300"
+        >
+          {expanded
+            ? t.hideSteps
+            : collapsedCount === 1
+              ? t.stepOne
+              : t.stepsCount(collapsedCount)}
+        </button>
       ) : null}
 
       {tools.map((tool, index) => {
         if (collapsible && !expanded && index < total - ALWAYS_VISIBLE_TAIL) {
           return null;
         }
-        return <Row key={tool.id} item={tool} onAnswer={noopAnswer} />;
+        if (tool.kind !== 'tool') return null;
+        return <ToolCall key={tool.id} item={tool} embedded />;
       })}
     </div>
   );
-}
-
-function noopAnswer(_toolUseId: string, _granted: boolean, _scope: PermissionScope): void {
-  // tool rows don't use onAnswer
 }
 
 function Row({

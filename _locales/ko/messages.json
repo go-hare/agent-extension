@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "Claude for Chrome",
+    "description": "Extension name shown in chrome://extensions and the toolbar."
+  },
+  "extDescription": {
+    "message": "브라우저 에이전트 — 페이지를 읽고 작업마다 권한을 받아 대신 수행합니다.",
+    "description": "Extension description shown in chrome://extensions."
+  },
+  "actionTitle": {
+    "message": "Claude 열기",
+    "description": "Tooltip on the toolbar button."
+  },
+  "commandTogglePanel": {
+    "message": "Claude 사이드 패널 전환",
+    "description": "Label for the keyboard shortcut in chrome://extensions/shortcuts."
+  }
+}

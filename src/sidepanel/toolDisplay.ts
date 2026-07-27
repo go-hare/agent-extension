@@ -17,6 +17,7 @@ import {
   FileText,
   Globe,
   Keyboard,
+  Layers,
   ListChecks,
   MousePointerClick,
   MoveHorizontal,
@@ -25,6 +26,7 @@ import {
   SquareDashed,
   Terminal,
   Type,
+  Upload,
   X,
   type LucideIcon,
 } from './components/icons';
@@ -51,6 +53,12 @@ const TABLE: Record<string, ToolDisplay> = {
   resize_window: { Icon: MoveHorizontal, label: 'Resize window' },
   update_plan: { Icon: ListChecks, label: 'Update plan' },
   todowrite: { Icon: ListChecks, label: 'Update checklist' },
+  browser_batch: { Icon: Layers, label: 'Batch actions' },
+  upload_image: { Icon: Upload, label: 'Upload image' },
+  file_upload: { Icon: Upload, label: 'Upload file' },
+  gif_creator: { Icon: Camera, label: 'GIF recording' },
+  shortcuts_list: { Icon: ListChecks, label: 'List shortcuts' },
+  shortcuts_execute: { Icon: ListChecks, label: 'Run shortcut' },
 };
 
 const FALLBACK: ToolDisplay = { Icon: Terminal, label: 'Tool' };
@@ -111,6 +119,35 @@ export function describeCall(name: string, input: unknown): ToolDisplay {
     case 'read_console_messages':
       return str(args.level) && args.level !== 'all'
         ? { ...base, label: `Read console (${str(args.level)})` }
+        : base;
+    case 'browser_batch': {
+      const n = Array.isArray(args.actions) ? args.actions.length : 0;
+      if (n === 0) return base;
+      return { ...base, label: `Batch ${n} action${n === 1 ? '' : 's'}` };
+    }
+    case 'upload_image':
+      return str(args.imageId)
+        ? { ...base, label: `Upload image ${truncate(str(args.imageId)!, 20)}` }
+        : base;
+    case 'file_upload': {
+      const n =
+        (Array.isArray(args.files) ? args.files.length : 0) +
+        (Array.isArray(args.fileIds) ? args.fileIds.length : 0);
+      if (n === 0) return base;
+      return { ...base, label: `Upload ${n} file${n === 1 ? '' : 's'}` };
+    }
+    case 'gif_creator': {
+      const a = str(args.action);
+      if (!a) return base;
+      if (a === 'start_recording') return { ...base, label: 'Start GIF recording' };
+      if (a === 'stop_recording') return { ...base, label: 'Stop GIF recording' };
+      if (a === 'export') return { ...base, label: 'Export GIF' };
+      if (a === 'clear') return { ...base, label: 'Clear GIF frames' };
+      return { ...base, label: `GIF: ${a}` };
+    }
+    case 'shortcuts_execute':
+      return str(args.command)
+        ? { ...base, label: `Run /${truncate(str(args.command)!, 24)}` }
         : base;
     default:
       return base;

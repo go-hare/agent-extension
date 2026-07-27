@@ -13,9 +13,10 @@ import pkg from './package.json' with { type: 'json' };
  */
 export default defineManifest({
   manifest_version: 3,
-  name: 'Agent for Chrome',
+  // chrome.i18n — full ~55-locale set under `_locales/*/messages.json`
+  name: '__MSG_extName__',
   version: pkg.version,
-  description: 'Browser agent — reads pages and acts on your behalf, with per-action permissions.',
+  description: '__MSG_extDescription__',
   minimum_chrome_version: '116',
   default_locale: 'en',
 
@@ -24,7 +25,7 @@ export default defineManifest({
   },
 
   action: {
-    default_title: 'Open Agent',
+    default_title: '__MSG_actionTitle__',
   },
 
   background: {
@@ -40,7 +41,7 @@ export default defineManifest({
 
   commands: {
     'toggle-side-panel': {
-      description: 'Toggle the agent side panel',
+      description: '__MSG_commandTogglePanel__',
       suggested_key: {
         default: 'Ctrl+E',
         mac: 'Command+E',
@@ -63,6 +64,13 @@ export default defineManifest({
       all_frames: false,
       run_at: 'document_idle',
       js: ['src/content/agentIndicator.ts'],
+    },
+    {
+      // Teach Claude / Record workflow — click capture on the top frame only.
+      matches: ['<all_urls>'],
+      all_frames: false,
+      run_at: 'document_idle',
+      js: ['src/content/workflowRecorder.ts'],
     },
   ],
 
@@ -125,7 +133,17 @@ export default defineManifest({
   web_accessible_resources: [
     {
       matches: ['<all_urls>'],
-      resources: ['public/icons/logo.svg'],
+      // logo + onboarding art (pin tip / cowork explainer). Paths must be
+      // exact — globs re-emit icon-128 and bloat the package.
+      resources: [
+        'public/icons/logo.svg',
+        'public/img/extension-light-min.svg',
+        'public/img/extension-dark-min.svg',
+        'public/img/cowork_chrome_light.png',
+        'public/img/cowork_chrome_dark.png',
+        // Teach Claude intro hero (runtime getURL — not statically analyzable)
+        'public/img/record-workflow-hero.png',
+      ],
       use_dynamic_url: false,
     },
   ],

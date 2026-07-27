@@ -67,6 +67,13 @@ export interface ToolContext {
   /** 该次 tool_use 的 id，权限提示要带上它才能对上号 */
   toolUseId: string;
   signal: AbortSignal;
+  /**
+   * 在 browser_batch 内为 true：需要用户点授权时直接失败，
+   * 不挂起等 UI（对齐官方 batch 语义）。
+   */
+  batchMode?: boolean;
+  /** 当前对话 messages，供 upload_image 按 imageId 回扫历史图片。 */
+  messages?: unknown[];
   /** 请求权限。工具内部调用，被拒时应返回 error 而不是抛异常。 */
   requestPermission(
     permission: Permission,
@@ -74,21 +81,24 @@ export interface ToolContext {
   ): Promise<PermissionDecision>;
 }
 
-/** 工具返回。要么有 output（文本），要么有 error；图片走 images。 */
-export interface ToolResult {
-  output?: string;
-  error?: string;
-  /** base64 图片，会被转成 Anthropic 的 image content block */
-  images?: Array<{ mediaType: 'image/png' | 'image/jpeg' | 'image/webp'; data: string }>;
-  /** 附加的 tab 上下文，让模型知道现在有哪些 tab 可用 */
-  tabContext?: TabContext;
-}
-
 export interface TabContext {
   currentTabId: number;
   executedOnTabId?: number;
   availableTabs: TabInfo[];
   tabCount: number;
+  /** Chrome tab group id when the session is group-scoped */
+  tabGroupId?: number;
+  tabGroupTitle?: string;
+}
+
+/** 工具返回。要么有 output（文本），要么有 error；图片走 images。 */
+export interface ToolResult {
+  output?: string;
+  error?: string;
+  /** base64 图片，会被转成 Anthropic 的 image content block */
+  images?: Array<{ mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string }>;
+  /** 附加的 tab 上下文，让模型知道现在有哪些 tab 可用 */
+  tabContext?: TabContext;
 }
 
 export interface TabInfo {
@@ -171,7 +181,25 @@ export interface Settings {
   /** 主题 */
   theme: 'claude';
   mode: 'light' | 'dark' | 'system';
-  locale: 'en-US' | 'zh-CN';
+  /**
+   * UI + model-reply language. Matches official Chrome packs we ship
+   * under src/i18n/locales (14 locales).
+   */
+  locale:
+    | 'en-US'
+    | 'zh-CN'
+    | 'zh-TW'
+    | 'ja-JP'
+    | 'ko-KR'
+    | 'de-DE'
+    | 'fr-FR'
+    | 'es-ES'
+    | 'es-419'
+    | 'pt-BR'
+    | 'it-IT'
+    | 'ru-RU'
+    | 'hi-IN'
+    | 'id-ID';
   /**
    * 权限模式（对齐原版 composer 左下角切换）：
    *  - `ask`  = "Ask before acting" —— 常规权限弹气泡
@@ -197,6 +225,12 @@ export interface Settings {
    * 默认折叠成一行摘要（Hide steps），展开后显示每次 tool_use。
    */
   hideToolSteps: boolean;
+  /** Teach Claude：录制时默认开启语音转写（可随时在录制条上开关）。 */
+  teachSpeechEnabled: boolean;
+  /** Teach Claude：SpeechRecognition 的 BCP-47 语言；空串 = 跟随 UI locale。 */
+  teachSpeechLang: string;
+  /** Teach Claude：录制时捕获页面截图帧，便于结束后导出 GIF。 */
+  teachCaptureFrames: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -216,6 +250,9 @@ export const DEFAULT_SETTINGS: Settings = {
   enableBrowserBatch: true,
   soundEnabled: true,
   hideToolSteps: false,
+  teachSpeechEnabled: false,
+  teachSpeechLang: '',
+  teachCaptureFrames: true,
 };
 
 // ───────────────────────────── 会话 ─────────────────────────────

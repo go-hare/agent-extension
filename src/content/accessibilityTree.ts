@@ -91,7 +91,7 @@ const INPUT_TYPE_ROLE: Record<string, string> = {
   image: 'button',
   checkbox: 'checkbox',
   radio: 'radio',
-  file: 'button',
+  file: 'file input',
   range: 'slider',
   search: 'searchbox',
 };

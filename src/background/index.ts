@@ -14,6 +14,12 @@
 
 import { installCdpListeners, reclaimStaleSessions, detachAll } from '@/cdp/session';
 import { hasUsableCredentials, loadSettings, peekSettings, watchSettings } from '@/storage/settings';
+import {
+  ALARM_PREFIX,
+  enqueuePrompt,
+  getScheduleByAlarmName,
+  resyncAllAlarms,
+} from '@/scheduling/store';
 
 // ───────────────────────── 侧栏开关 ─────────────────────────
 
@@ -86,10 +92,16 @@ installCdpListeners();
  *
  * 不 detach 的话，页面顶部的"XX 正在调试此浏览器"横幅会一直挂着，
  * 用户会以为扩展还在偷偷操作。
+ *
+ * 同时计数 sidepanel port，供定时任务决定是入队还是只发通知。
  */
+let sidepanelPorts = 0;
+
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'sidepanel') return;
+  sidepanelPorts += 1;
   port.onDisconnect.addListener(() => {
+    sidepanelPorts = Math.max(0, sidepanelPorts - 1);
     void detachAll();
   });
 });
@@ -133,8 +145,41 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
   }
 });
 
+// ───────────────────────── 定时任务 MVP ─────────────────────────
+//
+// 真实 agent 需要侧栏开着。alarm 触发时：
+//  - 若有 sidepanel port → 把 prompt 塞进 session queue，侧栏 drain 后执行
+//  - 否则发通知，请用户打开 Agent
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (!alarm.name.startsWith(ALARM_PREFIX)) return;
+  void (async () => {
+    const s = await getScheduleByAlarmName(alarm.name);
+    if (!s || !s.enabled) return;
+    if (sidepanelPorts > 0) {
+      await enqueuePrompt({
+        scheduleId: s.id,
+        title: s.title,
+        prompt: s.prompt,
+      });
+      return;
+    }
+    try {
+      await chrome.notifications.create({
+        type: 'basic',
+        iconUrl: chrome.runtime.getURL('public/icons/icon-128.png'),
+        title: 'Scheduled task waiting',
+        message: `"${s.title}" is ready — open Agent to run it.`,
+      });
+    } catch {
+      /* notifications may be blocked */
+    }
+  })();
+});
+
 // ───────────────────────── 启动 ─────────────────────────
 
 watchSettings();
 void loadSettings();
 void reclaimStaleSessions();
+void resyncAllAlarms();

@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "Claude for Chrome",
+    "description": "Extension name shown in chrome://extensions and the toolbar."
+  },
+  "extDescription": {
+    "message": "Agen browser — membaca halaman dan bertindak untuk Anda, dengan izin per tindakan.",
+    "description": "Extension description shown in chrome://extensions."
+  },
+  "actionTitle": {
+    "message": "Buka Claude",
+    "description": "Tooltip on the toolbar button."
+  },
+  "commandTogglePanel": {
+    "message": "Alihkan panel samping Claude",
+    "description": "Label for the keyboard shortcut in chrome://extensions/shortcuts."
+  }
+}

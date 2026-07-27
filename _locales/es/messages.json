@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "Claude for Chrome",
+    "description": "Extension name shown in chrome://extensions and the toolbar."
+  },
+  "extDescription": {
+    "message": "Agente del navegador: lee páginas y actúa por ti, con permiso por cada acción.",
+    "description": "Extension description shown in chrome://extensions."
+  },
+  "actionTitle": {
+    "message": "Abrir Claude",
+    "description": "Tooltip on the toolbar button."
+  },
+  "commandTogglePanel": {
+    "message": "Mostrar u ocultar el panel lateral de Claude",
+    "description": "Label for the keyboard shortcut in chrome://extensions/shortcuts."
+  }
+}

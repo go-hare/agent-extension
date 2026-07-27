@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "Claude for Chrome",
+    "description": "Extension name shown in chrome://extensions and the toolbar."
+  },
+  "extDescription": {
+    "message": "瀏覽器智慧代理 — 讀取頁面並代你操作，每次動作都需授權。",
+    "description": "Extension description shown in chrome://extensions."
+  },
+  "actionTitle": {
+    "message": "開啟 Claude",
+    "description": "Tooltip on the toolbar button."
+  },
+  "commandTogglePanel": {
+    "message": "切換 Claude 側欄",
+    "description": "Label for the keyboard shortcut in chrome://extensions/shortcuts."
+  }
+}

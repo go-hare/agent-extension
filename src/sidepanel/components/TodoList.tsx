@@ -1,8 +1,11 @@
 /**
  * 任务清单（todowrite 工具的 UI）。
  *
- * 模型通过 todowrite 更新，用户只读。不在这里做勾选 ——
- * 勾选会让 transcript 和模型记忆分叉。
+ * 官方侧栏把 TodoWrite 收成 ToolUseRow 文案 "Step X of Y"；
+ * 本扩展额外展示可读清单，边框/字重用官方 token 卡样式
+ * （border-[0.5px] border-border-300 rounded-xl / font-base）。
+ *
+ * 用户只读 — 不在这里勾选，避免 transcript 与模型记忆分叉。
  */
 
 import { cn } from './cn';
@@ -18,13 +21,17 @@ export function TodoList({ items }: { items: TodoItem[] }) {
   if (items.length === 0) return null;
 
   const done = items.filter((t) => t.status === 'completed').length;
+  const current =
+    items.findIndex((t) => t.status === 'in_progress' || t.status === 'pending') + 1 || 1;
 
   return (
-    <div className="mx-4 mb-2 rounded-[14px] border-[0.5px] border-border-300 bg-bg-000 px-3 py-2.5">
-      <div className="mb-2 flex items-center gap-2">
-        <ListChecks size={14} className="text-text-300" />
-        <span className="font-base text-sm text-text-100">Plan</span>
-        <span className="font-small text-[0.6875rem] text-text-500">
+    <div className="border-[0.5px] border-border-300 rounded-xl mx-2.5 mt-1 mb-2 overflow-hidden bg-bg-000/30 px-3 py-2 space-y-1.5">
+      <div className="flex items-center gap-2">
+        <ListChecks size={16} className="text-text-300 shrink-0" />
+        <span className="font-base text-text-300 text-sm">
+          Step {current} of {items.length}
+        </span>
+        <span className="font-small text-text-500 ml-auto">
           {done}/{items.length}
         </span>
       </div>
@@ -34,7 +41,7 @@ export function TodoList({ items }: { items: TodoItem[] }) {
             <StatusDot status={t.status} />
             <span
               className={cn(
-                'font-base min-w-0 flex-1 text-[0.8125rem] leading-snug',
+                'font-base min-w-0 flex-1 text-sm leading-snug',
                 t.status === 'completed' || t.status === 'cancelled'
                   ? 'text-text-500 line-through'
                   : t.status === 'in_progress'

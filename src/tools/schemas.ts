@@ -701,6 +701,311 @@ export const todoWriteSchema: AnthropicToolSchema = {
   },
 };
 
+// ───────────────────────────── browser_batch ─────────────────────────────
+
+export const browserBatchInput = z.object({
+  actions: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        input: z.record(z.unknown()).default({}),
+      }),
+    )
+    .min(1)
+    .max(20),
+});
+
+export const browserBatchSchema: AnthropicToolSchema = {
+  name: 'browser_batch',
+  description:
+    'Execute a sequence of browser tool calls in ONE round trip. Actions run SEQUENTIALLY ' +
+    '(not in parallel) and stop on the first error. Prefer this whenever you can predict two or ' +
+    'more steps (click→type→key, form fills, multi-step navigation) — it is significantly faster. ' +
+    'browser_batch cannot be nested. ' +
+    'IMPORTANT: steps that still need a fresh user permission grant will fail inside a batch — ' +
+    'call that tool once standalone so the user is prompted, then batch the rest. ' +
+    'Coordinates you write in THIS batch refer to the screenshot taken BEFORE this call ' +
+    '(mid-batch screenshots are returned for verification but are not the coordinate basis).',
+  input_schema: {
+    type: 'object',
+    properties: {
+      actions: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 20,
+        description:
+          'List of tool calls to execute sequentially. Example: ' +
+          '[{"name":"computer","input":{"action":"left_click","ref":"ref_1"}},' +
+          '{"name":"computer","input":{"action":"type","text":"hello"}}]',
+        items: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description:
+                'Tool name (e.g. computer, navigate, find, form_input, tabs_create). ' +
+                'browser_batch cannot be nested.',
+            },
+            input: {
+              type: 'object',
+              description: "That tool's input — same shape you'd pass when calling it directly.",
+            },
+          },
+          required: ['name', 'input'],
+        },
+      },
+    },
+    required: ['actions'],
+  },
+};
+
+// ───────────────────────────── upload_image ─────────────────────────────
+
+export const uploadImageInput = z
+  .object({
+    imageId: z.string().min(1),
+    ref: z.string().optional(),
+    coordinate: z.tuple([z.number(), z.number()]).optional(),
+    tabId: z.number().optional(),
+    filename: z.string().optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (!v.ref && !v.coordinate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide either ref (file input / element) or coordinate (drag & drop), not neither.',
+      });
+    }
+    if (v.ref && v.coordinate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ref'],
+        message: 'Provide ref or coordinate, not both.',
+      });
+    }
+  });
+
+export const uploadImageSchema: AnthropicToolSchema = {
+  name: 'upload_image',
+  description:
+    'Upload a previously captured screenshot or user-attached image to a file input or drag & drop ' +
+    'target. Use imageId from a computer screenshot output (or a user attachment note). ' +
+    'Provide either ref (preferred for <input type="file">, including hidden ones) or coordinate ' +
+    '(for visible drop targets like Google Docs), not both. ' +
+    'Do NOT click file inputs — the native picker is invisible to you.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      imageId: {
+        type: 'string',
+        description:
+          'ID of a previously captured screenshot (from computer screenshot output, e.g. img_3) ' +
+          'or a user-attached image.',
+      },
+      ref: {
+        type: 'string',
+        description:
+          'Element reference from read_page/find (e.g. ref_1). Use for file inputs or specific elements.',
+      },
+      coordinate: {
+        type: 'array',
+        items: { type: 'number' },
+        minItems: 2,
+        maxItems: 2,
+        description: 'Viewport coordinates [x, y] for drag & drop to a visible location.',
+      },
+      tabId: tabIdProp,
+      filename: {
+        type: 'string',
+        description: 'Optional filename for the uploaded file (default: image.png).',
+      },
+    },
+    required: ['imageId'],
+  },
+};
+
+// ───────────────────────────── file_upload ─────────────────────────────
+
+const filePart = z.object({
+  data: z.string().min(1),
+  name: z.string().min(1),
+  mimeType: z.string().optional(),
+});
+
+export const fileUploadInput = z
+  .object({
+    files: z.array(filePart).optional(),
+    fileIds: z.array(z.string().min(1)).optional(),
+    ref: z.string().min(1),
+    tabId: z.number().optional(),
+    paths: z.array(z.string()).optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.paths && v.paths.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['paths'],
+        message:
+          'file_upload no longer accepts host filesystem paths. Pass base64 via `files` or catalog `fileIds`.',
+      });
+    }
+    const nFiles = v.files?.length ?? 0;
+    const nIds = v.fileIds?.length ?? 0;
+    if (nFiles + nIds < 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['files'],
+        message: 'Provide at least one entry in `files` (base64) or `fileIds` (from user attachments).',
+      });
+    }
+  });
+
+export const fileUploadSchema: AnthropicToolSchema = {
+  name: 'file_upload',
+  description:
+    'Upload one or multiple files to a file input element on the page. ' +
+    'Do not click file upload buttons or file inputs — clicking opens a native file picker you cannot see. ' +
+    'Locate the input with read_page/find, then pass its ref here. ' +
+    'Supply file bytes as base64 in `files`, or `fileIds` from user attachments in the side panel.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      files: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            data: { type: 'string', description: 'Base64-encoded file contents (no data: prefix).' },
+            name: { type: 'string', description: 'Filename shown to the page.' },
+            mimeType: { type: 'string', description: 'MIME type (default application/octet-stream).' },
+          },
+          required: ['data', 'name'],
+        },
+        description: 'Files to upload as base64-encoded bytes.',
+      },
+      fileIds: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Catalog ids of user-attached files (from the side panel attachment chips).',
+      },
+      ref: {
+        type: 'string',
+        description: 'Element reference ID of the file input from read_page or find (e.g. ref_1).',
+      },
+      tabId: tabIdProp,
+    },
+    required: ['ref'],
+  },
+};
+
+// ───────────────────────────── gif_creator ─────────────────────────────
+
+export const GIF_ACTIONS = ['start_recording', 'stop_recording', 'export', 'clear'] as const;
+
+export const gifCreatorInput = z
+  .object({
+    action: z.enum(GIF_ACTIONS),
+    tabId: z.number().optional(),
+    coordinate: z.tuple([z.number(), z.number()]).optional(),
+    download: z.boolean().optional(),
+    filename: z.string().optional(),
+    options: z
+      .object({
+        showActionLabels: z.boolean().optional(),
+        quality: z.number().min(1).max(30).optional(),
+      })
+      .optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.action === 'export' && !v.download && !v.coordinate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "export requires download: true and/or coordinate for drag/drop upload.",
+      });
+    }
+  });
+
+export const gifCreatorSchema: AnthropicToolSchema = {
+  name: 'gif_creator',
+  description:
+    'Manage GIF recording and export for browser automation. ' +
+    "Actions: 'start_recording' (begin capturing computer/navigate frames, max 50), " +
+    "'stop_recording' (keep frames), 'export' (build GIF — set download:true and/or coordinate), " +
+    "'clear' (discard). After start, take a screenshot for the first frame; before stop, screenshot for the last.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: [...GIF_ACTIONS],
+        description: 'start_recording | stop_recording | export | clear',
+      },
+      tabId: tabIdProp,
+      coordinate: {
+        type: 'array',
+        items: { type: 'number' },
+        minItems: 2,
+        maxItems: 2,
+        description: 'Viewport [x,y] to drag/drop the GIF onto the page (export).',
+      },
+      download: {
+        type: 'boolean',
+        description: 'If true, download the GIF via the browser downloads UI (export).',
+      },
+      filename: { type: 'string', description: "Export filename (default recording-<timestamp>.gif)." },
+      options: {
+        type: 'object',
+        properties: {
+          showActionLabels: { type: 'boolean' },
+          quality: { type: 'number', description: '1–30, lower is higher quality (default 10).' },
+        },
+      },
+    },
+    required: ['action'],
+  },
+};
+
+// ───────────────────────────── shortcuts ─────────────────────────────
+
+export const shortcutsListSchema: AnthropicToolSchema = {
+  name: 'shortcuts_list',
+  description:
+    'List all available shortcuts and workflows. Returns id, command, title, description. ' +
+    'Use shortcuts_execute to run one.',
+  input_schema: { type: 'object', properties: {}, required: [] },
+};
+
+export const shortcutsExecuteInput = z
+  .object({
+    shortcutId: z.string().optional(),
+    command: z.string().optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (!v.shortcutId && !v.command) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Either shortcutId or command is required. Use shortcuts_list first.',
+      });
+    }
+  });
+
+export const shortcutsExecuteSchema: AnthropicToolSchema = {
+  name: 'shortcuts_execute',
+  description:
+    'Execute a shortcut/workflow by id or command name (without leading slash). ' +
+    'Starts a new turn in the current side panel with the shortcut prompt and returns immediately.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      shortcutId: { type: 'string', description: 'Shortcut id from shortcuts_list.' },
+      command: {
+        type: 'string',
+        description: "Command name without leading slash (e.g. 'summarize').",
+      },
+    },
+  },
+};
+
 /**
  * zod 错误 → 给模型的可操作文案。
  *

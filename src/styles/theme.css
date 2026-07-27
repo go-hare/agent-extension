@@ -75,7 +75,9 @@
   --font-mono: var(--font-anthropic-mono);
   --font-ui: var(--font-anthropic-sans);
   --font-ui-serif: var(--font-anthropic-serif);
-  --font-agent-response: var(--font-anthropic-serif);
+  /* Official CSS variable name — keep in sync with agent-response alias */
+  --font-claude-response: var(--font-anthropic-serif);
+  --font-agent-response: var(--font-claude-response);
   --font-user-message: var(--font-ui);
   --font-sans-serif: var(--font-ui);
   --font-serif: var(--font-ui-serif);
@@ -379,10 +381,142 @@
     font-weight: 400;
     line-height: 1.4;
   }
-  .font-agent-response {
-    font-family: var(--font-agent-response);
+  .font-button {
+    font-family: var(--font-ui);
+    font-size: 0.875rem;
+    font-weight: 550;
+    line-height: 1.4;
+  }
+  .font-button-lg {
+    font-family: var(--font-ui);
+    font-size: 1rem;
+    font-weight: 550;
+    line-height: 1.4;
+  }
+  .font-caption {
+    font-family: var(--font-ui);
+    opacity: 0.8;
+    font-size: 0.75rem;
+    font-weight: 400;
+    line-height: 1.4;
+  }
+  .font-base-sm {
+    font-family: var(--font-ui);
+    font-size: 0.875rem;
+    font-variation-settings: 'wght' 400;
+    font-weight: 400;
+    line-height: 1.4;
+  }
+  .font-code {
+    font-family: var(--font-mono);
+    font-variant-ligatures: none;
+    font-feature-settings: 'calt' 0, 'liga' 0;
+    font-size: 0.813rem;
+    font-weight: 400;
+    line-height: 1.5;
+  }
+  .font-code-sm {
+    font-family: var(--font-mono);
+    font-variant-ligatures: none;
+    font-feature-settings: 'calt' 0, 'liga' 0;
+    font-size: 0.688rem;
+    font-weight: 400;
+    line-height: 1.5;
+  }
+  .font-code-inline {
+    font-family: var(--font-mono);
+    font-variant-ligatures: none;
+    font-feature-settings: 'calt' 0, 'liga' 0;
+    font-size: 0.813rem;
+    font-weight: 400;
+    line-height: 1.5;
+  }
+  .z-dropdown {
+    z-index: 50;
+  }
+
+  /*
+   * Official font-claude-response* utilities (src-DTxMKEcl.css).
+   * agent-response* aliases kept for any remaining local references.
+   */
+  .font-claude-response {
+    font-family: var(--font-claude-response);
     font-variation-settings: 'wght' 360;
     font-weight: 400;
+  }
+  .font-claude-response-heading {
+    font-family: var(--font-claude-response);
+    font-variation-settings: 'opsz' 20, 'wght' 530;
+    font-size: 1.25rem;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+  .font-claude-response-title {
+    font-family: var(--font-claude-response);
+    font-variation-settings: 'opsz' 28, 'wght' 530;
+    font-size: 1.75rem;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .font-claude-response-body {
+    font-family: var(--font-claude-response);
+    font-size: 1rem;
+    font-weight: 400;
+    line-height: 1.5;
+  }
+  .font-claude-response-body-bold {
+    font-family: var(--font-claude-response);
+    font-size: 1rem;
+    font-weight: 600;
+    line-height: 1.5;
+  }
+  .font-claude-response-code {
+    font-family: var(--font-mono);
+    font-variant-ligatures: none;
+    font-feature-settings: 'calt' 0, 'liga' 0;
+    font-size: 0.813rem;
+    font-weight: 400;
+    line-height: 1.5;
+  }
+  .font-claude-response-code-small {
+    font-family: var(--font-mono);
+    font-variant-ligatures: none;
+    font-feature-settings: 'calt' 0, 'liga' 0;
+    font-size: 0.688rem;
+    font-weight: 400;
+    line-height: 1.5;
+  }
+  .font-claude-response-small {
+    font-family: var(--font-claude-response);
+    font-size: 0.875rem;
+    font-weight: 400;
+    line-height: 1.5;
+  }
+  .font-claude-response-small-bold {
+    font-family: var(--font-claude-response);
+    font-size: 0.875rem;
+    font-weight: 600;
+    line-height: 1.5;
+  }
+  .font-claude-response-subheading {
+    font-family: var(--font-claude-response);
+    font-size: 1rem;
+    font-weight: 600;
+    line-height: 1.35;
+  }
+
+  /* Local aliases → official (Message.tsx only intentional rename surface) */
+  .font-agent-response {
+    font-family: var(--font-claude-response);
+    font-variation-settings: 'wght' 360;
+    font-weight: 400;
+  }
+  .font-agent-response-heading {
+    font-family: var(--font-claude-response);
+    font-variation-settings: 'opsz' 20, 'wght' 530;
+    font-size: 1.25rem;
+    font-weight: 600;
+    line-height: 1.4;
   }
   .font-agent-response-code {
     font-family: var(--font-mono);
@@ -393,13 +527,13 @@
     line-height: 1.5;
   }
   .font-agent-response-body {
-    font-family: var(--font-agent-response);
+    font-family: var(--font-claude-response);
     font-size: 1rem;
     font-weight: 400;
     line-height: 1.5;
   }
   .font-agent-response-small {
-    font-family: var(--font-agent-response);
+    font-family: var(--font-claude-response);
     font-size: 0.875rem;
     font-weight: 400;
     line-height: 1.5;
@@ -424,50 +558,75 @@
   .border-0\.5 {
     border-width: 0.5px;
   }
+
+  /* Official inline-link (PermissionBubble / SkipConfirm) */
+  .inline-link {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+  .inline-link:hover {
+    text-decoration: none;
+  }
 }
 
 /* ──────────────── Agent 回复正文排版（对应原版 .claude-response） ──────────────── */
 
 @layer components {
+  /* Official .claude-response; .agent-response is local alias */
+  .claude-response,
   .agent-response {
-    font-family: var(--font-agent-response);
+    font-family: var(--font-claude-response);
     font-variation-settings: 'wght' 360;
     font-weight: 400;
   }
+  .claude-response h1,
   .agent-response h1 {
-    font-family: var(--font-agent-response);
+    font-family: var(--font-claude-response);
     font-size: 1.125rem;
     font-weight: 600;
     line-height: 1.3;
   }
+  .claude-response h2,
   .agent-response h2 {
-    font-family: var(--font-agent-response);
+    font-family: var(--font-claude-response);
     font-size: 1rem;
     font-weight: 600;
     line-height: 1.4;
   }
+  .claude-response h3,
+  .claude-response h4,
+  .claude-response h5,
+  .claude-response h6,
   .agent-response h3,
   .agent-response h4,
   .agent-response h5,
   .agent-response h6 {
-    font-family: var(--font-agent-response);
+    font-family: var(--font-claude-response);
     font-size: 0.875rem;
     font-weight: 600;
     line-height: 1.35;
   }
+  .claude-response p,
+  .claude-response li,
+  .claude-response small,
   .agent-response p,
   .agent-response li,
   .agent-response small {
-    font-family: var(--font-agent-response);
+    font-family: var(--font-claude-response);
     font-size: 0.875rem;
     font-weight: 400;
     line-height: 1.5;
   }
+  .claude-response p b,
+  .claude-response li b,
+  .claude-response strong,
   .agent-response p b,
   .agent-response li b,
   .agent-response strong {
     font-weight: 600;
   }
+  .claude-response code,
   .agent-response code {
     font-family: var(--font-mono);
     font-variant-ligatures: none;
@@ -476,27 +635,33 @@
     font-weight: 400;
     line-height: 1.5;
   }
+  .claude-response code small,
   .agent-response code small {
     font-size: 0.688rem;
   }
+  .claude-response pre,
   .agent-response pre {
     font-family: var(--font-mono);
     font-size: 0.813rem;
     line-height: 1.5;
   }
+  .claude-response ul,
   .agent-response ul {
     list-style: disc;
     padding-left: 1.25rem;
   }
+  .claude-response ol,
   .agent-response ol {
     list-style: decimal;
     padding-left: 1.25rem;
   }
+  .claude-response a,
   .agent-response a {
     color: var(--color-accent-100);
     text-decoration: underline;
     text-underline-offset: 2px;
   }
+  .claude-response blockquote,
   .agent-response blockquote {
     border-left: 2px solid var(--color-border-200);
     padding-left: 0.75rem;

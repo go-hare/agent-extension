@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "Claude for Chrome",
+    "description": "Extension name shown in chrome://extensions and the toolbar."
+  },
+  "extDescription": {
+    "message": "Agente del browser — legge le pagine e agisce per te, con autorizzazione per ogni azione.",
+    "description": "Extension description shown in chrome://extensions."
+  },
+  "actionTitle": {
+    "message": "Apri Claude",
+    "description": "Tooltip on the toolbar button."
+  },
+  "commandTogglePanel": {
+    "message": "Attiva/disattiva il riquadro laterale di Claude",
+    "description": "Label for the keyboard shortcut in chrome://extensions/shortcuts."
+  }
+}

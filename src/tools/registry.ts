@@ -25,6 +25,7 @@ import * as obs from '@/cdp/observers';
 import {
   buildTabContext,
   delay,
+  ensureAgentTabGrouped,
   formatTabs,
   getEffectiveTabId,
   getTab,
@@ -68,6 +69,11 @@ import {
   updatePlanSchema,
 } from './schemas';
 import { setTodos } from '@/sidepanel/state/todos';
+import { putScreenshot } from '@/media/catalog';
+import { createBrowserBatchTool } from './batch';
+import { createUploadImageTool, createFileUploadTool } from './upload';
+import { createGifCreatorTool, maybeCaptureGifFrame } from './gif';
+import { createShortcutsExecuteTool, createShortcutsListTool } from './shortcuts';
 import type { z } from 'zod';
 
 export interface Tool {
@@ -230,8 +236,18 @@ const computerTool: Tool = {
           await hideIndicator(tabId);
           await delay(80);
           const s = await shot.capture(tabId);
-          const parts = [`Screenshot of tab ${tabId} (${s.width}x${s.height} as shown to you).`];
+          const entry = putScreenshot({
+            data: s.data,
+            mediaType: s.mediaType,
+            width: s.width,
+            height: s.height,
+            tabId,
+          });
+          const parts = [
+            `Screenshot of tab ${tabId} (${s.width}x${s.height} as shown to you). imageId: ${entry.id}.`,
+          ];
           if (s.truncatedNote) parts.push(s.truncatedNote);
+          parts.push('Pass this imageId to upload_image if you need to upload the screenshot to a page.');
           return withContext(
             ctx,
             {
@@ -247,11 +263,18 @@ const computerTool: Tool = {
           await delay(80);
           const region = args.region!;
           const s = await shot.captureRegion(tabId, region);
+          const entry = putScreenshot({
+            data: s.data,
+            mediaType: s.mediaType,
+            width: s.width,
+            height: s.height,
+            tabId,
+          });
           return withContext(
             ctx,
             {
               output:
-                `Zoomed view of region [${region.join(', ')}] on tab ${tabId}. ` +
+                `Zoomed view of region [${region.join(', ')}] on tab ${tabId} (imageId: ${entry.id}). ` +
                 `IMPORTANT: coordinates in this magnified image do NOT match the real page. ` +
                 `To click something you see here, take a normal screenshot first (or use read_page ` +
                 `and a ref), then give coordinates from that.`,
@@ -282,6 +305,7 @@ const computerTool: Tool = {
           const [x, y] = shot.toCssCoordinates(tabId, args.coordinate![0], args.coordinate![1]);
           await input.scroll(tabId, x, y, args.scroll_direction!, args.scroll_amount ?? 3);
           await delay(180); // 等无限滚动之类的内容加载
+          void maybeCaptureGifFrame(tabId, `scroll_${args.scroll_direction}`);
           return withContext(
             ctx,
             {
@@ -330,6 +354,7 @@ const computerTool: Tool = {
                 .join(' | ')}`
             : '';
 
+          void maybeCaptureGifFrame(tabId, action);
           return withContext(
             ctx,
             {
@@ -353,6 +378,7 @@ const computerTool: Tool = {
             modifiers: input.parseModifiers(args.modifiers),
           });
           await delay(200);
+          void maybeCaptureGifFrame(tabId, 'left_click_drag');
           return withContext(
             ctx,
             { output: `Dragged from (${sx}, ${sy}) to (${ex}, ${ey}).` },
@@ -364,6 +390,7 @@ const computerTool: Tool = {
           await showIndicator(tabId, 'Typing');
           await input.typeText(tabId, args.text!);
           await delay(120);
+          void maybeCaptureGifFrame(tabId, 'type');
           return withContext(
             ctx,
             {
@@ -385,6 +412,7 @@ const computerTool: Tool = {
                 .map((d) => `${d.type}: ${d.message}`)
                 .join(' | ')}`
             : '';
+          void maybeCaptureGifFrame(tabId, 'key');
           return withContext(
             ctx,
             { output: `Pressed "${args.text}"${args.repeat && args.repeat > 1 ? ` x${args.repeat}` : ''}.${extra}` },
@@ -815,6 +843,7 @@ const navigateTool: Tool = {
           ? ' The page is still loading; some content may be missing.'
           : '';
 
+      void maybeCaptureGifFrame(tabId, `navigate:${tab.url ?? target}`);
       return withContext(
         ctx,
         {
@@ -884,13 +913,16 @@ const tabsCreateTool: Tool = {
       });
       if (tab.id === undefined) return { error: 'Failed to create a tab.' };
 
-      // 跟当前 tab 归到同一个分组，用户一眼能看出哪些是 agent 开的
+      // 当前 tab 已在用户分组 → 新 tab 跟进同组；否则收进 agent 自建组
+      // （不把用户原 tab 拽进 Agent 组）
       if (cur.groupId !== undefined && cur.groupId !== -1) {
         try {
           await chrome.tabs.group({ tabIds: tab.id, groupId: cur.groupId });
         } catch {
           /* 分组失败无所谓 */
         }
+      } else {
+        await ensureAgentTabGrouped(tab.id);
       }
 
       openedByAgent.add(tab.id);
@@ -1251,6 +1283,13 @@ const todoWriteTool: Tool = {
 
 // ════════════════════════════ 注册表 ════════════════════════════
 
+const uploadImageTool = createUploadImageTool({ guard, withContext });
+const fileUploadTool = createFileUploadTool({ guard, withContext });
+const browserBatchTool = createBrowserBatchTool();
+const gifCreatorTool = createGifCreatorTool({ guard });
+const shortcutsListTool = createShortcutsListTool();
+const shortcutsExecuteTool = createShortcutsExecuteTool();
+
 const ALL: Tool[] = [
   computerTool,
   readPageTool,
@@ -1267,6 +1306,12 @@ const ALL: Tool[] = [
   resizeWindowTool,
   updatePlanTool,
   todoWriteTool,
+  browserBatchTool,
+  uploadImageTool,
+  fileUploadTool,
+  gifCreatorTool,
+  shortcutsListTool,
+  shortcutsExecuteTool,
 ];
 
 const byName = new Map(ALL.map((t) => [t.name, t]));
@@ -1333,5 +1378,6 @@ export async function cleanupTools(): Promise<void> {
 
 /** 清空对话时把 todo 板一起清掉（由 useSession.reset 调用）。 */
 export { clearTodos } from '@/sidepanel/state/todos';
+export { clearSessionMedia } from '@/media/catalog';
 
 export { openedByAgent };

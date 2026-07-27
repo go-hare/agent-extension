@@ -21,6 +21,7 @@ import { availableScopes } from '@/permissions/manager';
 import { PERMISSION, type PermissionScope } from '@/shared/types';
 import { ShieldIcon } from './icons';
 import type { PermissionItem } from '../state/transcript';
+import { useUi } from '@/i18n/UiLocaleContext';
 
 /** 键盘去抖：先亮 isActive，再真正提交。原版 150ms。 */
 const KEY_ARM_DELAY = 150;
@@ -37,6 +38,7 @@ export interface PermissionBubbleProps {
 type ActiveChoice = 'once' | 'deny' | 'always' | null;
 
 export function PermissionBubble({ item, onAnswer }: PermissionBubbleProps) {
+  const t = useUi();
   const { request, answer } = item;
   const answered = answer !== undefined;
 
@@ -95,7 +97,7 @@ export function PermissionBubble({ item, onAnswer }: PermissionBubbleProps) {
       <div className="flex items-center gap-2 py-[10px] px-4">
         <ShieldIcon size={20} className="text-text-100" />
         <h3 className="font-base text-text-100">
-          {answered ? 'Permission' : 'New permissions required'}
+          {answered ? t.permission : t.newPermissionsRequired}
         </h3>
       </div>
 
@@ -106,16 +108,16 @@ export function PermissionBubble({ item, onAnswer }: PermissionBubbleProps) {
         <div>
           <p className="font-base-bold text-text-100">
             {isPlan
-              ? 'Claude wants your approval to:'
-              : `Claude wants to ${verbFor(request.permission)}:`}
+              ? t.claudeWantsApproval
+              : t.claudeWantsTo(verbFor(request.permission, t))}
           </p>
           {request.host ? (
-            <p dir="ltr" className="font-agent-response-code text-text-200">
+            <p dir="ltr" className="font-claude-response-code text-text-200">
               {request.host}
             </p>
           ) : null}
           {request.actionLabel && request.actionLabel !== request.host ? (
-            <p dir="ltr" className="font-agent-response-code text-text-300 mt-1 break-words">
+            <p dir="ltr" className="font-claude-response-code text-text-300 mt-1 break-words">
               {clip(request.actionLabel)}
             </p>
           ) : null}
@@ -154,15 +156,16 @@ function Choices({
   active: ActiveChoice;
   onPick: (granted: boolean, scope: PermissionScope, choice: ActiveChoice) => void;
 }) {
+  const t = useUi();
   return (
     <div className="px-3 py-[10px] space-y-[5px] mt-[10px] mb-0.5">
       <ScopeButton isActive={active === 'once'} onClick={() => onPick(true, 'once', 'once')}>
-        <span>{isPlan ? 'Approve plan' : 'Allow this action'}</span>
+        <span>{isPlan ? t.approvePlan : t.allowOnce}</span>
         <Kbd hint="↵" />
       </ScopeButton>
 
       <ScopeButton isActive={active === 'deny'} onClick={() => onPick(false, 'once', 'deny')}>
-        <span>{isPlan ? 'Make changes' : 'Decline'}</span>
+        <span>{isPlan ? t.makeChanges : t.decline}</span>
         <Kbd hint="Esc" />
       </ScopeButton>
 
@@ -175,8 +178,8 @@ function Choices({
           onClick={() => onPick(true, 'always', 'always')}
         >
           <div className="flex flex-col items-start">
-            <span>Always allow actions on this site</span>
-            <span className="font-small text-text-500">Browse, click, and type</span>
+            <span>{t.alwaysAllowSite}</span>
+            <span className="font-small text-text-500">{t.browseClickType}</span>
           </div>
           <span className="flex items-center gap-0.5">
             <Kbd hint="⌘" />
@@ -184,20 +187,17 @@ function Choices({
           </span>
         </ScopeButton>
       ) : (
-        <p className="font-small text-text-500 px-1 mt-2">
-          Site-level permissions are disabled for this site.
-        </p>
+        <p className="font-small text-text-500 px-1 mt-2">{t.sitePermissionsDisabled}</p>
       )}
 
       <p className="font-small text-text-500 px-1 mt-2">
-        Claude will not purchase items, create accounts, or bypass captchas without input. Revoke
-        site permissions in{' '}
+        {t.permissionFooter}{' '}
         <button
           type="button"
           onClick={() => void chrome.runtime.openOptionsPage()}
           className="inline-link hover:text-text-400"
         >
-          settings
+          {t.settingsLink}
         </button>
         .
       </p>
@@ -244,39 +244,40 @@ function Kbd({ hint }: { hint: string }) {
 }
 
 function AnsweredNote({ granted, scope }: { granted: boolean; scope: PermissionScope }) {
+  const t = useUi();
   return (
     <p className={cn('font-small px-1 pb-1', granted ? 'text-text-500' : 'text-danger-100')}>
       {granted
         ? scope === 'always'
-          ? 'Allowed — and remembered for this site.'
-          : 'Allowed once.'
-        : 'Declined.'}
+          ? t.allowedRemembered
+          : t.allowedOnce
+        : t.declined}
     </p>
   );
 }
 
-function verbFor(permission: string): string {
+function verbFor(permission: string, t: ReturnType<typeof useUi>): string {
   switch (permission) {
     case PERMISSION.READ_PAGE_CONTENT:
-      return 'read this page';
+      return t.verbRead;
     case PERMISSION.CLICK:
-      return 'click';
+      return t.verbClick;
     case PERMISSION.TYPE:
-      return 'type';
+      return t.verbType;
     case PERMISSION.NAVIGATE:
-      return 'navigate';
+      return t.verbNavigate;
     case PERMISSION.EXECUTE_JAVASCRIPT:
-      return 'run JavaScript';
+      return t.verbJs;
     case PERMISSION.UPLOAD_IMAGE:
-      return 'upload a file';
+      return t.verbUpload;
     case PERMISSION.READ_CONSOLE_MESSAGES:
-      return 'read the console';
+      return t.verbConsole;
     case PERMISSION.READ_NETWORK_REQUESTS:
-      return 'inspect network traffic';
+      return t.verbNetwork;
     case PERMISSION.PLAN_APPROVAL:
-      return 'follow a plan';
+      return t.verbPlan;
     default:
-      return 'act';
+      return t.verbAct;
   }
 }
 
