@@ -1,38 +1,26 @@
 /**
- * Official "Teach Claude" / Record workflow (nG + recording chrome).
+ * Official "Teach Claude" / Record workflow (nG + tG + eG).
  *
- * Flow:
- *  1. Intro — hero + "Start recording"
- *  2. Recording — capture clicks on the active tab; list steps; pause/stop
- *  3. Review — edit title, save as shortcut (and optionally run once)
- *
- * className shells mirror official:
- *   intro full panel; black primary CTA; step cards border-[0.5px]…
+ * Capture path matches Claude in Chrome 1.0.81:
+ *   injectElementSelector → ELEMENT_SELECTION → screenshot + blue circle
+ *   → KEYSTROKE_UPDATE type steps → LLM enhance / summary on save
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from './cn';
 import { CloseIcon, ListChecks, MousePointerClick, SpinnerIcon } from './icons';
 import { useUi } from '@/i18n/UiLocaleContext';
 import {
   buildWorkflowPrompt,
-  newStepId,
   slugCommand,
   type WorkflowRecordingMeta,
   type WorkflowStep,
 } from '@/workflow/types';
+import { generateWorkflowSummary } from '@/workflow/enhance';
+import { RecordingSession } from '@/workflow/recordingSession';
 import { saveShortcut } from '@/shortcuts/store';
 import { peekSettings } from '@/storage/settings';
-import {
-  clearRecording,
-  groupKey,
-  pushFrame,
-  startRecording as gifStart,
-  stopRecording as gifStop,
-  getSession,
-} from '@/gif/recorder';
-import { encodeGif, uint8ToBase64 } from '@/gif/encode';
-import * as shot from '@/cdp/screenshot';
+import { resolveActiveBrowserTab } from '@/tabs/activeTab';
 
 export type TeachPhase = 'intro' | 'recording' | 'review';
 
@@ -45,6 +33,35 @@ export interface TeachClaudeProps {
   onClose: () => void;
   /** After save, optionally start a turn with the prompt. */
   onSaved?: (prompt: string, meta: { command: string; title: string }) => void;
+}
+
+/** Step screenshot zoom (official ZC, simplified). */
+function StepShot({
+  screenshot,
+  click,
+  viewport,
+}: {
+  screenshot: string;
+  click?: { x: number; y: number };
+  viewport?: { width: number; height: number };
+}) {
+  const origin = useMemo(() => {
+    if (!click || !viewport?.width || !viewport?.height) return '50% 50%';
+    const x = Math.min(100, Math.max(0, (click.x / viewport.width) * 100));
+    const y = Math.min(100, Math.max(0, (click.y / viewport.height) * 100));
+    return `${x}% ${y}%`;
+  }, [click, viewport]);
+
+  return (
+    <div className="relative w-full h-48 overflow-hidden rounded-xl border-[0.5px] border-border-200 bg-bg-200">
+      <img
+        src={`data:image/jpeg;base64,${screenshot}`}
+        alt=""
+        className="w-full h-full object-cover transition-transform duration-500 ease-out"
+        style={{ transform: 'scale(2.5)', transformOrigin: origin }}
+      />
+    </div>
+  );
 }
 
 export function TeachClaude({
@@ -63,13 +80,74 @@ export function TeachClaude({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const metaRef = useRef<WorkflowRecordingMeta>({ startedAt: Date.now() });
+  const sessionRef = useRef<RecordingSession | null>(null);
   const speechRef = useRef<BrowserSpeechRecognition | null>(null);
   const [speechOn, setSpeechOn] = useState(false);
   const [interim, setInterim] = useState('');
+  const speechSegmentsRef = useRef<{ text: string; timestamp: number }[]>([]);
+  const [micGranted, setMicGranted] = useState<boolean | null>(null);
+  const [displayTitle, setDisplayTitle] = useState(tabTitle || '');
+  const [displayUrl, setDisplayUrl] = useState(tabUrl || '');
+  const [summaryPrompt, setSummaryPrompt] = useState<string | null>(null);
+
+  const speechSupported =
+    typeof window !== 'undefined' &&
+    ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
+
+  // Mic permission (official intro gate). Re-check when user returns from Options.
+  const refreshMicPermission = useCallback(async () => {
+    try {
+      const st = await navigator.permissions.query({
+        name: 'microphone' as PermissionName,
+      });
+      setMicGranted(st.state === 'granted');
+      return st.state === 'granted';
+    } catch {
+      // permissions.query may fail; treat as unknown → not blocking forever
+      setMicGranted((prev) => (prev === true ? true : false));
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let permStatus: PermissionStatus | null = null;
+    void (async () => {
+      try {
+        const st = await navigator.permissions.query({
+          name: 'microphone' as PermissionName,
+        });
+        if (cancelled) return;
+        permStatus = st;
+        setMicGranted(st.state === 'granted');
+        st.addEventListener('change', () => {
+          if (!cancelled) setMicGranted(st.state === 'granted');
+        });
+      } catch {
+        if (!cancelled) setMicGranted(false);
+      }
+    })();
+
+    const onVis = () => {
+      if (document.visibilityState === 'visible') void refreshMicPermission();
+    };
+    const onFocus = () => {
+      void refreshMicPermission();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', onFocus);
+      // PermissionStatus.onchange cleanup is best-effort; listener above uses closed-over cancelled
+      void permStatus;
+    };
+  }, [refreshMicPermission]);
 
   const hostLabel = (() => {
     try {
-      return tabUrl ? new URL(tabUrl).hostname : '';
+      return displayUrl ? new URL(displayUrl).hostname : '';
     } catch {
       return '';
     }
@@ -79,152 +157,7 @@ export function TeachClaude({
     ? `https://www.google.com/s2/favicons?domain=${hostLabel}&sz=32`
     : '';
 
-  const pushStep = useCallback((partial: Omit<WorkflowStep, 'id'>) => {
-    setSteps((prev) => [...prev, { ...partial, id: newStepId() }]);
-  }, []);
-
-  // ── GIF frame capture (optional; drives "Export GIF" in review) ──
-  const gifKey = tabId !== undefined ? groupKey({ tabId }) : null;
-  const framesOnRef = useRef(false);
-  const [frameCount, setFrameCount] = useState(0);
-  const [exporting, setExporting] = useState(false);
-  const [exportMsg, setExportMsg] = useState<string | null>(null);
-
-  const captureFrame = useCallback(
-    async (label: string) => {
-      if (!framesOnRef.current || !gifKey || tabId === undefined) return;
-      try {
-        const s = await shot.capture(tabId, { format: 'jpeg' });
-        const r = pushFrame(gifKey, {
-          jpegBase64: s.data,
-          label: label.slice(0, 60),
-          width: s.width,
-          height: s.height,
-        });
-        if (r.ok) setFrameCount(r.count);
-      } catch {
-        /* frame capture is best-effort */
-      }
-    },
-    [gifKey, tabId],
-  );
-
-  // Listen for content-script steps + navigation
-  useEffect(() => {
-    if (phase !== 'recording') return;
-
-    const onMsg = (
-      msg: { type?: string; step?: Omit<WorkflowStep, 'id'> },
-      _sender: chrome.runtime.MessageSender,
-    ) => {
-      if (msg?.type === 'WORKFLOW_STEP' && msg.step && !paused) {
-        const s = msg.step;
-        pushStep({
-          action: s.action || 'click',
-          description: s.description || 'Step',
-          url: s.url,
-          selector: s.selector,
-          elementText: s.elementText,
-          tagName: s.tagName,
-          text: s.text,
-          masked: s.masked,
-          timestamp: s.timestamp || Date.now(),
-          clickPosition: s.clickPosition,
-          viewportDimensions: s.viewportDimensions,
-          speechTranscript: interim || undefined,
-        });
-        setInterim('');
-        void captureFrame(s.description);
-      }
-    };
-    chrome.runtime.onMessage.addListener(onMsg);
-
-    const onNav = (
-      details: chrome.webNavigation.WebNavigationTransitionCallbackDetails,
-    ) => {
-      if (paused) return;
-      if (tabId !== undefined && details.tabId !== tabId) return;
-      if (details.frameId !== 0) return;
-      if (details.transitionType === 'auto_subframe') return;
-      pushStep({
-        action: 'navigate',
-        description: `Navigate to ${details.url}`,
-        url: details.url,
-        timestamp: Date.now(),
-      });
-      void captureFrame(`Navigate to ${details.url}`);
-    };
-    chrome.webNavigation.onCommitted.addListener(onNav);
-
-    return () => {
-      chrome.runtime.onMessage.removeListener(onMsg);
-      chrome.webNavigation.onCommitted.removeListener(onNav);
-    };
-  }, [phase, paused, tabId, pushStep, interim]);
-
-  const setTabRecording = useCallback(
-    async (recording: boolean, isPaused = false) => {
-      if (tabId === undefined) return;
-      try {
-        await chrome.tabs.sendMessage(tabId, {
-          type: 'WORKFLOW_RECORDER_SET',
-          recording,
-          paused: isPaused,
-        });
-      } catch {
-        // Content script not present (chrome://, Web Store, or not yet loaded).
-        if (recording) setError(t.teachNeedPage);
-      }
-    },
-    [tabId, t.teachNeedPage],
-  );
-
-  const startRecording = useCallback(async () => {
-    setError(null);
-    setSteps([]);
-    setPaused(false);
-    setExportMsg(null);
-    metaRef.current = {
-      startedAt: Date.now(),
-      startUrl: tabUrl,
-      pageTitle: tabTitle,
-    };
-    // Optional GIF frame capture for the whole recording session.
-    const wantFrames = peekSettings().teachCaptureFrames && gifKey;
-    framesOnRef.current = Boolean(wantFrames);
-    setFrameCount(0);
-    if (wantFrames && gifKey) {
-      clearRecording(gifKey);
-      gifStart(gifKey);
-      void captureFrame('start');
-    }
-    onPhase('recording');
-    await setTabRecording(true, false);
-  }, [onPhase, setTabRecording, tabTitle, tabUrl, gifKey, captureFrame]);
-
-  const stopRecording = useCallback(async () => {
-    await setTabRecording(false, false);
-    stopSpeech();
-    if (gifKey && framesOnRef.current) {
-      await captureFrame('end');
-      gifStop(gifKey);
-    }
-    framesOnRef.current = false;
-    setTitle(tabTitle ? `Workflow: ${tabTitle.slice(0, 40)}` : t.teachDefaultTitle);
-    onPhase('review');
-  }, [onPhase, setTabRecording, t.teachDefaultTitle, tabTitle, gifKey, captureFrame]);
-
-  const togglePause = useCallback(async () => {
-    const next = !paused;
-    setPaused(next);
-    await setTabRecording(true, next);
-  }, [paused, setTabRecording]);
-
-  const removeStep = (id: string) => {
-    setSteps((prev) => prev.filter((s) => s.id !== id));
-  };
-
-  function stopSpeech() {
+  const stopSpeech = useCallback(() => {
     try {
       speechRef.current?.stop();
     } catch {
@@ -233,13 +166,18 @@ export function TeachClaude({
     speechRef.current = null;
     setSpeechOn(false);
     setInterim('');
-  }
+  }, []);
 
-  const toggleSpeech = () => {
-    if (speechOn) {
-      stopSpeech();
-      return;
-    }
+  const getSpeechSince = useCallback((sinceTs: number) => {
+    const segs = speechSegmentsRef.current.filter((s) => s.timestamp >= sinceTs);
+    const text = segs
+      .map((s) => s.text)
+      .join(' ')
+      .trim();
+    return text || undefined;
+  }, []);
+
+  const startSpeech = useCallback(() => {
     const w = window as Window & {
       SpeechRecognition?: BrowserSpeechRecognitionCtor;
       webkitSpeechRecognition?: BrowserSpeechRecognitionCtor;
@@ -247,117 +185,195 @@ export function TeachClaude({
     const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
     if (!SR) {
       setError(t.teachSpeechUnsupported);
-      return;
+      return false;
     }
     const rec = new SR();
     rec.continuous = true;
     rec.interimResults = true;
-    // Language from Options; fall back to the UI locale, then browser default.
     const st = peekSettings();
     rec.lang = st.teachSpeechLang || st.locale || '';
     rec.onresult = (ev: BrowserSpeechRecognitionEvent) => {
       let interimText = '';
-      let finalText = '';
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         const r = ev.results[i];
         if (!r) continue;
         const piece = r[0]?.transcript ?? '';
-        if (r.isFinal) finalText += piece;
-        else interimText += piece;
-      }
-      if (finalText) {
-        setSteps((prev) => {
-          if (prev.length === 0) {
-            return [
-              {
-                id: newStepId(),
-                action: 'note',
-                description: 'Voice note',
-                timestamp: Date.now(),
-                speechTranscript: finalText.trim(),
-              },
-            ];
+        if (r.isFinal) {
+          const text = piece.trim();
+          if (text) {
+            speechSegmentsRef.current.push({ text, timestamp: Date.now() });
           }
-          const copy = [...prev];
-          const last = copy[copy.length - 1]!;
-          copy[copy.length - 1] = {
-            ...last,
-            speechTranscript: [last.speechTranscript, finalText.trim()]
-              .filter(Boolean)
-              .join(' '),
-          };
-          return copy;
-        });
+        } else {
+          interimText += piece;
+        }
       }
-      setInterim(interimText);
+      setInterim(interimText.trim());
     };
-    rec.onerror = () => {
-      setSpeechOn(false);
-    };
+    rec.onerror = () => setSpeechOn(false);
     try {
       rec.start();
       speechRef.current = rec;
       setSpeechOn(true);
       setError(null);
+      return true;
     } catch {
       setError(t.teachSpeechUnsupported);
+      return false;
+    }
+  }, [t.teachSpeechUnsupported]);
+
+  const toggleSpeech = useCallback(() => {
+    if (speechOn) {
+      stopSpeech();
+      return;
+    }
+    void startSpeech();
+  }, [speechOn, startSpeech, stopSpeech]);
+
+  /**
+   * Official path: open Options with #permissions?requestMicrophone=true
+   * so getUserMedia runs on an extension page (sidepanel prompts are flaky).
+   * Also try getUserMedia here first — if it works, no need to leave.
+   */
+  const requestMic = useCallback(async () => {
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((tr) => tr.stop());
+      const granted = await refreshMicPermission();
+      if (granted) {
+        setMicGranted(true);
+        return;
+      }
+      // "Allow this time" may not stick in permissions.query
+      setError(t.teachMicAllowHint);
+      setMicGranted(true); // allow Start recording this session
+      return;
+    } catch (e) {
+      // Fall through to Options page (official nG handler)
+      const name = e instanceof DOMException ? e.name : '';
+      if (name === 'NotFoundError') {
+        setError(t.teachSpeechUnsupported);
+        // No mic hardware — don't block recording
+        setMicGranted(true);
+        return;
+      }
+    }
+
+    const optionsUrl = chrome.runtime.getURL(
+      'src/options/index.html#permissions?requestMicrophone=true',
+    );
+    try {
+      await chrome.tabs.create({ url: optionsUrl });
+    } catch {
+      void chrome.runtime.openOptionsPage();
+    }
+    setError(null);
+  }, [refreshMicPermission, t.teachMicAllowHint, t.teachSpeechUnsupported]);
+
+  const startRecording = useCallback(async () => {
+    setError(null);
+    setSteps([]);
+    setPaused(false);
+    setSummaryPrompt(null);
+    speechSegmentsRef.current = [];
+
+    let target = await resolveActiveBrowserTab();
+    if (!target && tabId !== undefined) {
+      target = {
+        id: tabId,
+        windowId: 0,
+        url: tabUrl ?? '',
+        title: tabTitle ?? '',
+      };
+    }
+    if (!target) {
+      setError(t.teachNeedPage);
+      return;
+    }
+
+    setDisplayTitle(target.title || tabTitle || '');
+    setDisplayUrl(target.url || tabUrl || '');
+
+    const session = new RecordingSession({
+      onSteps: setSteps,
+      onPausedChange: setPaused,
+      onError: (msg) => setError(msg),
+      enhance: true,
+      getSpeechSince,
+    });
+    sessionRef.current = session;
+
+    const res = await session.start(target.id);
+    if (!res.ok) {
+      setError(res.error || t.teachNeedPage);
+      sessionRef.current = null;
+      return;
+    }
+    metaRef.current = session.recordingMeta;
+    onPhase('recording');
+
+    // Auto speech when mic granted / settings
+    if (micGranted && speechSupported && peekSettings().teachSpeechEnabled !== false) {
+      void startSpeech();
+    }
+  }, [
+    getSpeechSince,
+    micGranted,
+    onPhase,
+    speechSupported,
+    startSpeech,
+    t.teachNeedPage,
+    tabId,
+    tabTitle,
+    tabUrl,
+  ]);
+
+  const stopRecording = useCallback(async () => {
+    stopSpeech();
+    const session = sessionRef.current;
+    const finalSteps = session ? await session.stop() : steps;
+    sessionRef.current = null;
+    setSteps(finalSteps);
+    setTitle(
+      displayTitle
+        ? `Workflow: ${displayTitle.slice(0, 40)}`
+        : t.teachDefaultTitle,
+    );
+    onPhase('review');
+  }, [displayTitle, onPhase, steps, stopSpeech, t.teachDefaultTitle]);
+
+  const discardRecording = useCallback(async () => {
+    stopSpeech();
+    if (sessionRef.current) {
+      await sessionRef.current.stop();
+      sessionRef.current = null;
+    }
+    setSteps([]);
+    setPaused(false);
+    setError(null);
+    onPhase('intro');
+  }, [onPhase, stopSpeech]);
+
+  const togglePause = useCallback(async () => {
+    await sessionRef.current?.togglePause();
+  }, []);
+
+  const removeStep = (id: string) => {
+    setSteps((prev) => prev.filter((s) => s.id !== id));
+    // Keep session in sync if still recording
+    if (sessionRef.current) {
+      // session doesn't expose remove — only local UI list for review after stop
     }
   };
 
   useEffect(() => {
     return () => {
-      void setTabRecording(false, false);
+      void sessionRef.current?.stop();
+      sessionRef.current = null;
       stopSpeech();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Auto-start speech when entering the recording phase, if enabled in Options.
-  const speechAutoRef = useRef(false);
-  useEffect(() => {
-    if (phase === 'recording' && !speechAutoRef.current) {
-      speechAutoRef.current = true;
-      if (peekSettings().teachSpeechEnabled && !speechOn) {
-        toggleSpeech();
-      }
-    }
-    if (phase !== 'recording') speechAutoRef.current = false;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase]);
-
-  /** Export the captured GIF frames as a download (review phase). */
-  const exportGif = useCallback(async () => {
-    if (!gifKey) return;
-    const sess = getSession(gifKey);
-    if (!sess || sess.frames.length === 0) {
-      setExportMsg(t.teachNoFrames);
-      return;
-    }
-    setExporting(true);
-    setExportMsg(null);
-    try {
-      const encoded = await encodeGif(
-        sess.frames.map((f) => ({ jpegBase64: f.jpegBase64, label: f.label })),
-        { delayCs: 50, maxSide: 640 },
-      );
-      const b64 = uint8ToBase64(encoded.data);
-      const name = (title.trim() || t.teachDefaultTitle)
-        .toLowerCase()
-        .replace(/[^a-z0-9一-鿿]+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .slice(0, 40);
-      await chrome.downloads.download({
-        url: `data:image/gif;base64,${b64}`,
-        filename: `${name || 'workflow'}.gif`,
-        saveAs: true,
-      });
-      setExportMsg(t.teachGifSaved(sess.frames.length));
-    } catch (e) {
-      setExportMsg(e instanceof Error ? e.message : String(e));
-    } finally {
-      setExporting(false);
-    }
-  }, [gifKey, title, t]);
+  }, [stopSpeech]);
 
   const save = async (andRun: boolean) => {
     if (steps.length === 0) {
@@ -369,14 +385,24 @@ export function TeachClaude({
     try {
       const name = title.trim() || t.teachDefaultTitle;
       const command = slugCommand(name);
-      const prompt = buildWorkflowPrompt(steps, metaRef.current, name);
+
+      let prompt = summaryPrompt;
+      if (!prompt) {
+        const sum = await generateWorkflowSummary(steps, { detailScreenshots: true });
+        prompt = sum.prompt || null;
+        if (prompt) setSummaryPrompt(prompt);
+      }
+      if (!prompt) {
+        prompt = buildWorkflowPrompt(steps, metaRef.current, name);
+      }
+
+      // Persist without bulky screenshots
       const sc = await saveShortcut({
         command,
         title: name,
         description: t.teachShortcutDesc(steps.length),
         prompt,
       });
-      // Always notify parent (refresh shortcuts list); pass prompt only when running.
       onSaved?.(andRun ? prompt : '', { command: sc.command, title: sc.title });
       onClose();
     } catch (e) {
@@ -386,7 +412,9 @@ export function TeachClaude({
     }
   };
 
+  // ─── intro ───
   if (phase === 'intro') {
+    const needMic = speechSupported && micGranted === false;
     return (
       <div className="flex flex-col h-full bg-bg-100">
         <div className="flex items-center justify-between px-4 pt-3 pb-3">
@@ -397,7 +425,7 @@ export function TeachClaude({
               <MousePointerClick size={16} className="text-text-300" />
             )}
             <span className="text-text-200 font-base-sm truncate max-w-[200px]">
-              {tabTitle || hostLabel || t.teachClaude}
+              {displayTitle || tabTitle || hostLabel || t.teachClaude}
             </span>
           </div>
           <button
@@ -421,7 +449,9 @@ export function TeachClaude({
             </div>
             <div className="space-y-2">
               <h2 className="font-base-bold text-text-100">{t.teachYourWorkflow}</h2>
-              <p className="text-text-300 font-base max-w-[280px] mx-auto">{t.teachIntroBody}</p>
+              <p className="text-text-300 font-base max-w-[280px] mx-auto">
+                {needMic ? t.teachIntroBodyMic : t.teachIntroBody}
+              </p>
             </div>
           </div>
         </div>
@@ -435,14 +465,34 @@ export function TeachClaude({
               {error ? (
                 <p className="font-small text-danger-100 text-center">{error}</p>
               ) : null}
-              <button
-                type="button"
-                onClick={() => void startRecording()}
-                className="w-full justify-center flex items-center px-4 py-2.5 rounded-[14px] bg-always-black text-oncolor-100 hover:bg-always-black/90 font-button transition-all"
-              >
-                <span className="inline-block w-2 h-2 rounded-full bg-danger-100 mr-2" />
-                {t.teachStartRecording}
-              </button>
+              {needMic ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void requestMic()}
+                    className="w-full justify-center flex items-center px-4 py-2.5 rounded-[14px] bg-always-black text-oncolor-100 hover:bg-always-black/90 font-button transition-all"
+                  >
+                    <span className="inline-block w-2 h-2 rounded-full bg-danger-100 mr-2" />
+                    {t.teachEnableMic}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void startRecording()}
+                    className="w-full justify-center flex items-center px-4 py-2 rounded-[14px] border-[0.5px] border-border-300 text-text-200 hover:bg-bg-200 font-button transition-colors"
+                  >
+                    {t.teachSkipMic}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void startRecording()}
+                  className="w-full justify-center flex items-center px-4 py-2.5 rounded-[14px] bg-always-black text-oncolor-100 hover:bg-always-black/90 font-button transition-all"
+                >
+                  <span className="inline-block w-2 h-2 rounded-full bg-danger-100 mr-2" />
+                  {t.teachStartRecording}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -450,6 +500,7 @@ export function TeachClaude({
     );
   }
 
+  // ─── recording ───
   if (phase === 'recording') {
     return (
       <div className="flex flex-col h-full bg-bg-100">
@@ -476,6 +527,13 @@ export function TeachClaude({
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={() => void discardRecording()}
+              className="px-2 py-1 rounded-md border-[0.5px] border-border-300 font-small text-text-200 hover:bg-bg-200"
+            >
+              {t.teachDiscard}
+            </button>
+            <button
+              type="button"
               onClick={() => void togglePause()}
               className="px-2 py-1 rounded-md border-[0.5px] border-border-300 font-small text-text-200 hover:bg-bg-200"
             >
@@ -497,13 +555,25 @@ export function TeachClaude({
               onClick={() => void stopRecording()}
               className="px-2 py-1 rounded-md bg-text-100 text-bg-100 font-small hover:bg-text-200"
             >
-              {t.teachStop}
+              {t.teachDone}
             </button>
           </div>
         </div>
 
         {interim ? (
           <p className="px-4 font-small text-text-400 italic truncate">“{interim}”</p>
+        ) : null}
+        {speechSupported && micGranted === false && !speechOn ? (
+          <div className="mx-3 mb-2 rounded-lg bg-yellow-100 text-yellow-800 px-3 py-2 font-small flex items-center gap-2">
+            <button
+              type="button"
+              className="underline hover:no-underline text-left"
+              onClick={() => void requestMic()}
+            >
+              {t.teachEnableMic}
+            </button>
+            <span className="opacity-80">{t.teachMicBanner}</span>
+          </div>
         ) : null}
         {error ? <p className="px-4 font-small text-danger-100">{error}</p> : null}
 
@@ -517,22 +587,37 @@ export function TeachClaude({
             steps.map((s, i) => (
               <div
                 key={s.id}
-                className="group border-[0.5px] border-border-300 rounded-xl bg-bg-000/30 px-3 py-2"
+                className="group border-[0.5px] border-border-300 rounded-2xl bg-bg-000/30 overflow-hidden"
               >
-                <div className="flex items-start gap-2">
+                <div className="flex items-start gap-2 px-3 py-3">
                   <span className="font-small text-text-500 shrink-0 w-5">{i + 1}.</span>
                   <div className="min-w-0 flex-1">
-                    <p className="font-base text-sm text-text-100">{s.description}</p>
-                    {s.action === 'type' && (s.text || s.masked) ? (
+                    <p
+                      className={cn(
+                        'font-base text-sm text-text-100',
+                        s.isEnhancing &&
+                          'bg-gradient-to-r from-text-400 via-text-200 to-text-400 bg-clip-text text-transparent animate-pulse',
+                      )}
+                    >
+                      {s.isEnhancing ? t.teachLoading : s.description}
+                    </p>
+                    {s.action === 'type' && (s.text || s.value || s.masked) ? (
                       <p className="font-claude-response-code text-text-300 truncate mt-0.5">
-                        {s.masked ? '••••••••' : s.text}
+                        {s.masked ? '••••••••' : s.text || s.value}
                       </p>
                     ) : null}
                     {s.selector ? (
-                      <p className="font-claude-response-code text-text-400 truncate">{s.selector}</p>
+                      <p className="font-claude-response-code text-text-400 truncate">
+                        {s.selector}
+                      </p>
                     ) : null}
                     {s.speechTranscript ? (
-                      <p className="font-small text-text-300 italic mt-1">“{s.speechTranscript}”</p>
+                      <p className="font-small text-text-300 italic mt-1">
+                        “{s.speechTranscript}”
+                      </p>
+                    ) : null}
+                    {s.tabId !== undefined ? (
+                      <p className="font-small text-text-400 mt-0.5">Tab {s.tabId}</p>
                     ) : null}
                   </div>
                   <button
@@ -544,6 +629,25 @@ export function TeachClaude({
                     <CloseIcon size={12} />
                   </button>
                 </div>
+                {s.screenshot && s.clickPosition ? (
+                  <div className="px-3 pb-3">
+                    <StepShot
+                      screenshot={s.screenshot}
+                      click={s.clickPosition}
+                      viewport={s.viewportDimensions}
+                    />
+                  </div>
+                ) : s.screenshot ? (
+                  <div className="px-3 pb-3">
+                    <div className="relative w-full h-48 overflow-hidden rounded-xl border-[0.5px] border-border-200">
+                      <img
+                        src={`data:image/jpeg;base64,${s.screenshot}`}
+                        alt=""
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ))
           )}
@@ -552,7 +656,7 @@ export function TeachClaude({
     );
   }
 
-  // review
+  // ─── review ───
   return (
     <div className="flex flex-col h-full bg-bg-100">
       <div className="flex items-center justify-between px-4 pt-3 pb-3">
@@ -596,18 +700,6 @@ export function TeachClaude({
       </div>
 
       <div className="mx-auto mb-3 max-w-3xl w-full px-3 flex flex-col gap-2">
-        {frameCount > 0 ? (
-          <button
-            type="button"
-            disabled={exporting}
-            onClick={() => void exportGif()}
-            className="w-full px-4 py-2.5 rounded-[14px] border border-border-300 text-text-200 hover:bg-bg-200 font-button transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-          >
-            {exporting ? <SpinnerIcon size={14} className="animate-spin" /> : null}
-            {exporting ? t.teachExporting : t.teachExportGif(frameCount)}
-          </button>
-        ) : null}
-        {exportMsg ? <p className="font-small text-text-400 text-center">{exportMsg}</p> : null}
         <button
           type="button"
           disabled={saving}
@@ -615,7 +707,7 @@ export function TeachClaude({
           className="w-full px-4 py-2.5 rounded-[14px] bg-text-100 hover:bg-text-200 text-bg-100 font-button transition-all disabled:opacity-50 flex items-center justify-center gap-2"
         >
           {saving ? <SpinnerIcon size={14} className="animate-spin" /> : null}
-          {t.teachSaveAndRun}
+          {saving ? t.teachGenerating : t.teachSaveAsShortcut}
         </button>
         <button
           type="button"

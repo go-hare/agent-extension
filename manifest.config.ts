@@ -65,13 +65,8 @@ export default defineManifest({
       run_at: 'document_idle',
       js: ['src/content/agentIndicator.ts'],
     },
-    {
-      // Teach Claude / Record workflow — click capture on the top frame only.
-      matches: ['<all_urls>'],
-      all_frames: false,
-      run_at: 'document_idle',
-      js: ['src/content/workflowRecorder.ts'],
-    },
+    // Teach Claude uses ephemeral chrome.scripting.executeScript injects
+    // (official injectElementSelector) — no permanent content script.
   ],
 
   host_permissions: ['<all_urls>'],
@@ -95,8 +90,11 @@ export default defineManifest({
 
   content_security_policy: {
     // script-src 'self' —— 不允许 inline script，所有页面入口都必须是外部 module。
+    // connect-src 必须含 http: —— 自建中转站常见 http://IP:port（无 TLS）。
+    // 只写 https: 时，扩展页 fetch 会被 CSP 直接拦成 "Failed to fetch"，
+    // 表现成"中转站挂了"，其实请求根本没出浏览器。
     extension_pages:
-      "script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:;",
+      "script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; font-src 'self' data:; connect-src 'self' https: http: wss: ws:;",
   },
 
   /*

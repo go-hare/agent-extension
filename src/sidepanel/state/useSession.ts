@@ -22,6 +22,7 @@ import { hasUsableCredentials, peekSettings } from '@/storage/settings';
 import type { PermissionScope } from '@/shared/types';
 import { resetAgentGroup } from '@/tools/tabs';
 import { drainQueue, requeueFront } from '@/scheduling/store';
+import { resolveActiveBrowserTab } from '@/tabs/activeTab';
 import {
   addNotice,
   addPermission,
@@ -93,18 +94,10 @@ export function useSession(): SessionState {
 
   const syncTab = useCallback(async () => {
     if (runningRef.current) return;
-    try {
-      const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!active?.id) return;
-      setTab({
-        id: active.id,
-        windowId: active.windowId,
-        url: active.url ?? '',
-        title: active.title ?? '',
-      });
-    } catch {
-      /* 权限还没就绪时会失败，下次事件再试 */
-    }
+    // Side panel is not a normal window: currentWindow often misses the browser tab.
+    const active = await resolveActiveBrowserTab();
+    if (!active) return;
+    setTab(active);
   }, []);
 
   useEffect(() => {

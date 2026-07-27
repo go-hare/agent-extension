@@ -23,8 +23,14 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { bootstrapTheme } from './theme';
 import { loadSettings, watchSettings } from '@/storage/settings';
+import { installCdpListeners } from '@/cdp/session';
 
 bootstrapTheme();
+
+// Agent tools (computer/screenshot) run in the sidepanel, not the SW.
+// Without onDetach here, sessions Map stays stale after the banner is
+// dismissed → "Debugger is not attached to the tab…".
+installCdpListeners();
 
 // 预热同步缓存。App 内部也会 load 一次，这里提前发是为了让
 // peekSettings() 在第一次 send() 之前就有值。

@@ -62,6 +62,14 @@ const ID_MAP = {
   '5U/pkz4osv': 'automateRepetitive',
   iubKfx5Rzl: 'openSettings',
   IKoTMcBJ0H: 'settingsSaved',
+  Hz3uf5n9Ga: 'aiDisclaimer',
+  Z7sL1cCQpI: 'convertToTask',
+  'CeT7NBzUtl': 'convertingToTask',
+  // Composer Actions menu (+)
+  'wL7VAE/fRX': 'actions',
+  aTaOpCB71M: 'takeScreenshot',
+  Ds0W5o1uCY: 'addAnImage',
+  tAAqTd9GOn: 'screenshotUnavailable',
   // Cowork / product surface (honest explainers still use our body copy)
   '1FUWJkTbi2': 'coworkOfficialHint',
   'SK2Ix/hhh7': 'coworkEmbedHint',

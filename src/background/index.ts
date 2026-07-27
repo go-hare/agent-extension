@@ -112,7 +112,12 @@ type Msg =
   | { type: 'OPEN_OPTIONS' }
   | { type: 'PLAY_NOTIFICATION_SOUND' }
   | { type: 'SHOW_NOTIFICATION'; title: string; message: string }
-  | { type: 'RESIZE_WINDOW'; windowId: number; width: number; height: number };
+  | { type: 'RESIZE_WINDOW'; windowId: number; width: number; height: number }
+  // Teach Claude ephemeral inject messages; SW ignores so sidepanel receives them.
+  | { type: 'ELEMENT_SELECTION' }
+  | { type: 'KEYSTROKE_UPDATE' }
+  | { type: 'CANCEL_ELEMENT_SELECTOR' }
+  | { type: 'WORKFLOW_STEP'; step?: unknown };
 
 chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
   switch (msg?.type) {
@@ -139,6 +144,13 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
           sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) }),
         );
       return true; // 异步回复
+
+    // Teach Claude: sidepanel owns recording; SW just ignores these.
+    case 'ELEMENT_SELECTION':
+    case 'KEYSTROKE_UPDATE':
+    case 'CANCEL_ELEMENT_SELECTOR':
+    case 'WORKFLOW_STEP':
+      return false;
 
     default:
       return false;

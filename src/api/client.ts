@@ -1,14 +1,14 @@
 /**
  * Anthropic API 客户端（走用户自己的 API 中转站）。
  *
- * 关键决定：**只用 `/v1/messages` 和 `/v1/models`**。
- * 中转站通常只代理这两个端点；oauth / bootstrap / features 这些
- * Anthropic 产品端点不属于 API 规格，往中转站发只会得到 404。
+ * Base URL = 中转**根地址**，**不要**再拼 `/v1`。
+ * `@anthropic-ai/sdk` 的请求路径已经是 `/v1/messages`、`/v1/models`：
+ *   baseURL `http://host:8317`  →  `http://host:8317/v1/messages`
+ * 若再把 baseURL 设成 `…/v1`，会变成 `…/v1/v1/messages`（双 /v1）。
  *
  * `dangerouslyAllowBrowser` 是必须的 —— SDK 默认拒绝在浏览器里跑，
  * 因为怕 API Key 泄露给网页。但这里是扩展的**特权页面**（侧栏），
  * 不是网页：网页脚本读不到扩展的 chrome.storage，也进不了这个 JS 上下文。
- * 风险模型和"把 key 写进网页"完全不同。
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -41,7 +41,8 @@ export function createClient(): Anthropic {
 
   return new Anthropic({
     apiKey: s.apiKey.trim(),
-    baseURL: `${normalizeBaseUrl(s.apiBaseUrl)}/v1`,
+    // Root only — SDK paths already include /v1/…
+    baseURL: normalizeBaseUrl(s.apiBaseUrl),
     dangerouslyAllowBrowser: true,
     maxRetries: 2,
     // 工具调用轮次多，单轮也可能很长；超时给宽一点但不无限
@@ -89,6 +90,42 @@ export function streamMessage(opts: StreamOptions): MessageStream {
     },
     { signal: opts.signal },
   );
+}
+
+export interface CreateMessageOptions {
+  system: string;
+  messages: MessageParam[];
+  model?: string;
+  maxTokens?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Non-streaming messages.create — used by Teach Claude step enhance / summary.
+ * Prefer over streamMessage when we just need a short completion.
+ */
+export async function createMessage(opts: CreateMessageOptions): Promise<string> {
+  const client = createClient();
+  const s = peekSettings();
+  const model = opts.model ?? s.model;
+  if (!model?.trim()) {
+    throw new ApiConfigError('No model selected. Pick a model in the extension options.');
+  }
+
+  const res = await client.messages.create(
+    {
+      model,
+      max_tokens: opts.maxTokens ?? 256,
+      system: opts.system,
+      messages: opts.messages,
+    },
+    opts.signal ? { signal: opts.signal } : undefined,
+  );
+
+  return res.content
+    .map((b) => (b.type === 'text' ? b.text : ''))
+    .filter(Boolean)
+    .join('\n');
 }
 
 /**
@@ -188,8 +225,8 @@ export function describeApiError(e: unknown): string {
   }
   if (status === 404) {
     return (
-      'Not found (404). Check the base URL — it should be the relay root (the extension appends /v1 itself), ' +
-      'and the model name must exist on that relay.'
+      'Not found (404). Check the base URL — use the relay root without /v1 ' +
+      '(requests go to {base}/v1/messages), and the model name must exist on that relay.'
     );
   }
   if (status === 429) {
@@ -204,8 +241,12 @@ export function describeApiError(e: unknown): string {
   if (status && status >= 500) {
     return `The relay returned ${status}. This is a server-side problem — retry, or check the relay status.`;
   }
-  if (/Failed to fetch|NetworkError|ENOTFOUND|ECONNREFUSED/i.test(raw)) {
-    return 'Could not reach the relay. Check the base URL and your network connection.';
+  if (/Failed to fetch|NetworkError|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|network timeout/i.test(raw)) {
+    return (
+      'Could not reach the relay (network / CORS / firewall, or the host is down). ' +
+      'Check Base URL, that the port is open from this machine, and that the relay allows browser Origin. ' +
+      'HTTP (non-TLS) relays are allowed by this extension; if it still fails, the problem is reachability, not CSP.'
+    );
   }
   if (/aborted|AbortError/i.test(raw)) {
     return 'Stopped.';

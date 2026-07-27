@@ -57,31 +57,37 @@ const PACKS: Record<UiLocale, Pack> = {
   'id-ID': idID as Pack,
 };
 
+/** Official overflow language order (Claude in Chrome 1.0.81 + zh/ru). */
 export const UI_LOCALES: Array<{ id: UiLocale; label: string }> = [
   { id: 'en-US', label: 'English' },
-  { id: 'zh-CN', label: '简体中文' },
-  { id: 'zh-TW', label: '繁體中文' },
-  { id: 'ja-JP', label: '日本語' },
-  { id: 'ko-KR', label: '한국어' },
   { id: 'de-DE', label: 'Deutsch' },
   { id: 'fr-FR', label: 'Français' },
-  { id: 'es-ES', label: 'Español' },
+  { id: 'ko-KR', label: '한국어' },
+  { id: 'ja-JP', label: '日本語' },
   { id: 'es-419', label: 'Español (Latinoamérica)' },
-  { id: 'pt-BR', label: 'Português (Brasil)' },
+  { id: 'es-ES', label: 'Español (España)' },
   { id: 'it-IT', label: 'Italiano' },
-  { id: 'ru-RU', label: 'Русский' },
   { id: 'hi-IN', label: 'हिन्दी' },
+  { id: 'pt-BR', label: 'Português (Brasil)' },
   { id: 'id-ID', label: 'Bahasa Indonesia' },
+  { id: 'ru-RU', label: 'Русский' },
+  { id: 'zh-CN', label: '简体中文' },
+  { id: 'zh-TW', label: '繁體中文' },
 ];
 
 export type UiStrings = {
   sidepanelTitle: string;
   optionsTitle: string;
   productName: string;
+  /** Footer under composer — official Hz3uf5n9Ga */
+  aiDisclaimer: string;
 
   clearChat: string;
   menu: string;
   settings: string;
+  /** Official Z7sL1cCQpI */
+  convertToTask: string;
+  convertingToTask: string;
   keyboardShortcut: string;
   language: string;
   openSettingsEllipsis: string;
@@ -105,6 +111,11 @@ export type UiStrings = {
   askBeforeActingDesc: string;
   actWithoutAskingDesc: string;
   attachFiles: string;
+  /** Official composer + menu (wL7VAE/fRX) */
+  actions: string;
+  takeScreenshot: string;
+  addAnImage: string;
+  screenshotUnavailable: string;
   sendMessage: string;
   stopMessage: string;
   permissionModeAria: (label: string) => string;
@@ -215,10 +226,25 @@ export type UiStrings = {
   teachNameLabel: string;
   teachSaveAndRun: string;
   teachSaveOnly: string;
+  teachSaveAsShortcut: string;
+  teachGenerating: string;
+  teachEnableMic: string;
+  teachIntroBodyMic: string;
+  teachSkipMic: string;
+  teachMicDenied: string;
+  teachMicAllowHint: string;
+  teachMicBanner: string;
+  teachDiscard: string;
+  teachDone: string;
   teachDefaultTitle: string;
   teachNeedPage: string;
   teachNoSteps: string;
   teachSpeechUnsupported: string;
+  teachGrantMic: string;
+  teachGrantMicHint: string;
+  teachMicStatusGranted: string;
+  teachMicStatusDenied: string;
+  teachMicStatusPrompt: string;
   teachShortcutDesc: (n: number) => string;
   teachSlashDesc: string;
   suggestionTeach: string;
@@ -226,6 +252,7 @@ export type UiStrings = {
   teachExporting: string;
   teachGifSaved: (n: number) => string;
   teachNoFrames: string;
+  teachLoading: string;
   /** Options — Teach Claude / speech section */
   sectionTeach: string;
   sectionTeachNote: string;
@@ -239,9 +266,13 @@ export type UiStrings = {
 
 /** Keys not present (or incomplete) in official non-EN packs — English base. */
 const EN_EXTRA: Pack = {
-  sidepanelTitle: 'Claude for Chrome',
+  // Official chrome extension name is "Claude" (manifest + sidepanel title)
+  sidepanelTitle: 'Claude',
   optionsTitle: 'Claude Options',
-  productName: 'Claude for Chrome',
+  productName: 'Claude',
+  aiDisclaimer: 'Claude is AI and can make mistakes. Please double-check responses.',
+  convertToTask: 'Convert to task',
+  convertingToTask: 'Converting…',
   openSettingsEllipsis: 'Open settings…',
   chooseModel: 'Choose a model',
   noModelsYet: 'No models loaded yet.',
@@ -252,6 +283,10 @@ const EN_EXTRA: Pack = {
   suggestionForm: 'Fill in this form with my details',
   answerPermissionAbove: 'Answer the permission request above',
   attachFiles: 'Attach files',
+  actions: 'Actions',
+  takeScreenshot: 'Take a screenshot',
+  addAnImage: 'Add an image',
+  screenshotUnavailable: 'Screenshot is not available on this page',
   sendMessage: 'Send message',
   stopMessage: 'Stop message',
   permission: 'Permission',
@@ -283,7 +318,7 @@ const EN_EXTRA: Pack = {
     'This extension talks to an Anthropic-compatible endpoint that you choose. Nothing is sent anywhere else.',
   sectionApi: 'API connection',
   sectionApiNote:
-    'Point this at your own relay. The extension appends /v1 itself — enter the root URL.',
+    'Point this at your own relay root. Do not include /v1 — requests use {base}/v1/messages.',
   sectionWhere: 'Where the agent may act',
   sectionWhereNote: 'Leave the allow-list empty to permit any site. The block-list always wins.',
   sectionCapabilities: 'Capabilities',
@@ -325,22 +360,43 @@ const EN_EXTRA: Pack = {
   teachClaude: 'Teach Claude',
   teachYourWorkflow: 'Teach Claude your workflow',
   teachIntroBody:
-    'Show Claude how you work by clicking through the steps. Claude will turn them into a reusable shortcut.',
+    'Go through the steps as if you’re teaching a new teammate. Claude will learn the process and repeat it for you.',
+  teachIntroBodyMic:
+    'Enable your microphone to narrate as you demonstrate the workflow. Claude will learn the process and repeat it for you.',
   teachStartRecording: 'Start recording',
+  teachEnableMic: 'Enable microphone',
+  teachSkipMic: 'Start without microphone',
+  teachMicDenied:
+    'Microphone access was denied. You can still record clicks without voice, or allow the mic in Options.',
+  teachMicAllowHint:
+    'Choose “Allow while visiting the site” so voice narration stays on for Teach Claude.',
+  teachMicBanner:
+    'Enable microphone for voice narration. Recording without speech.',
+  teachGrantMic: 'Allow microphone',
+  teachGrantMicHint:
+    'Used for optional voice narration while teaching a workflow. Clicks still record without it.',
+  teachMicStatusGranted: 'Microphone allowed',
+  teachMicStatusDenied: 'Microphone blocked — allow it in the site controls or try again',
+  teachMicStatusPrompt: 'Microphone not enabled yet',
   teachRecording: 'Recording',
   teachPaused: 'Paused',
   teachPause: 'Pause',
   teachResume: 'Resume',
   teachStop: 'Stop',
+  teachDiscard: 'Discard',
+  teachDone: 'Done',
   teachVoice: 'Voice',
   teachVoiceOn: 'Listening…',
-  teachClickHint: 'Click elements on the page to record steps.',
+  teachClickHint: 'Click through your task to record each step',
   teachStep: 'step',
   teachSteps: 'steps',
   teachSaveTitle: 'Save workflow',
   teachNameLabel: 'Name',
   teachSaveAndRun: 'Save & run',
   teachSaveOnly: 'Save only',
+  teachSaveAsShortcut: 'Save as shortcut',
+  teachGenerating: 'Generating…',
+  teachLoading: 'Loading…',
   teachDefaultTitle: 'Recorded workflow',
   teachNeedPage:
     'Open a normal web page (not chrome:// or the store) so clicks can be recorded.',
@@ -362,7 +418,12 @@ const EN_EXTRA: Pack = {
 };
 
 const ZH_CN_EXTRA: Pack = {
+  sidepanelTitle: 'Claude',
+  productName: 'Claude',
   optionsTitle: 'Claude 选项',
+  aiDisclaimer: 'Claude 是 AI，可能会犯错。请仔细检查回答。',
+  convertToTask: '转换为任务',
+  convertingToTask: '正在转换…',
   openSettingsEllipsis: '打开设置…',
   chooseModel: '选择模型',
   noModelsYet: '尚未加载模型。',
@@ -373,6 +434,10 @@ const ZH_CN_EXTRA: Pack = {
   suggestionForm: '用我的信息填写此表单',
   answerPermissionAbove: '请先回答上方的权限请求',
   attachFiles: '附加文件',
+  actions: '操作',
+  takeScreenshot: '截取屏幕',
+  addAnImage: '添加图片',
+  screenshotUnavailable: '此页面无法使用屏幕截图',
   sendMessage: '发送消息',
   stopMessage: '停止',
   permission: '权限',
@@ -401,7 +466,7 @@ const ZH_CN_EXTRA: Pack = {
   stepOne: '1 步',
   optionsIntro: '此扩展连接到您选择的 Anthropic 兼容接口。不会发送到其他地方。',
   sectionApi: 'API 连接',
-  sectionApiNote: '指向您自己的中转。扩展会自行追加 /v1 — 请填写根 URL。',
+  sectionApiNote: '指向您自己的中转根地址。不要带 /v1 — 请求会发到 {base}/v1/messages。',
   sectionWhere: '可操作的范围',
   sectionWhereNote: '允许列表留空表示不限制站点。阻止列表始终优先。',
   sectionCapabilities: '功能',
@@ -436,22 +501,40 @@ const ZH_CN_EXTRA: Pack = {
   // Teach Claude
   teachClaude: '教 Claude',
   teachYourWorkflow: '把你的流程教给 Claude',
-  teachIntroBody: '在页面上逐步点击演示，Claude 会把这些步骤保存成可复用的快捷指令。',
+  teachIntroBody: '像教新同事一样走完步骤。Claude 会学习这个流程并替你重复。',
+  teachIntroBodyMic: '开启麦克风，边演示边口述。Claude 会学习这个流程并替你重复。',
   teachStartRecording: '开始录制',
+  teachEnableMic: '启用麦克风',
+  teachSkipMic: '不使用麦克风，直接开始',
+  teachMicDenied:
+    '麦克风权限被拒绝。你仍可无语音录制点击，或在设置页允许麦克风。',
+  teachMicAllowHint:
+    '请选择「在访问该网站时允许」，以便 Teach Claude 能持续使用语音旁白。',
+  teachMicBanner: '启用麦克风以进行语音旁白。当前正在无语音录制。',
+  teachGrantMic: '允许麦克风',
+  teachGrantMicHint: '用于录制流程时的可选语音旁白。不授权也能录制点击。',
+  teachMicStatusGranted: '已允许麦克风',
+  teachMicStatusDenied: '麦克风被拦截 — 请在站点控件中允许或重试',
+  teachMicStatusPrompt: '尚未启用麦克风',
   teachRecording: '录制中',
   teachPaused: '已暂停',
   teachPause: '暂停',
   teachResume: '继续',
   teachStop: '停止',
+  teachDiscard: '丢弃',
+  teachDone: '完成',
   teachVoice: '语音',
   teachVoiceOn: '聆听中…',
-  teachClickHint: '在页面上点击元素以记录步骤。',
+  teachClickHint: '在页面上逐步点击，以记录每一步',
   teachStep: '步',
   teachSteps: '步',
   teachSaveTitle: '保存工作流',
   teachNameLabel: '名称',
   teachSaveAndRun: '保存并运行',
   teachSaveOnly: '仅保存',
+  teachSaveAsShortcut: '保存为快捷指令',
+  teachGenerating: '生成中…',
+  teachLoading: '加载中…',
   teachDefaultTitle: '已录制的工作流',
   teachNeedPage: '请打开普通网页（不要使用 chrome:// 或商店页），才能录制点击。',
   teachNoSteps: '保存前请至少录制一步。',
@@ -692,13 +775,19 @@ function build(locale: UiLocale): UiStrings {
   const isZh = locale === 'zh-CN' || locale === 'zh-TW';
 
   return {
-    sidepanelTitle: p('sidepanelTitle', 'Claude for Chrome'),
+    sidepanelTitle: p('sidepanelTitle', 'Claude'),
     optionsTitle: p('optionsTitle', 'Claude Options'),
-    productName: p('productName', 'Claude for Chrome'),
+    productName: p('productName', 'Claude'),
+    aiDisclaimer: p(
+      'aiDisclaimer',
+      'Claude is AI and can make mistakes. Please double-check responses.',
+    ),
 
     clearChat: p('clearChat', 'Clear chat'),
     menu: p('menu', 'Menu'),
     settings: p('settings', 'Settings'),
+    convertToTask: p('convertToTask', 'Convert to task'),
+    convertingToTask: p('convertingToTask', 'Converting…'),
     keyboardShortcut: p('keyboardShortcut', 'Keyboard shortcut'),
     language: p('language', 'Language'),
     openSettingsEllipsis: p('openSettingsEllipsis', 'Open settings…'),
@@ -735,6 +824,13 @@ function build(locale: UiLocale): UiStrings {
       'Claude works without pausing for approval.',
     ),
     attachFiles: p('attachFiles', 'Attach files'),
+    actions: p('actions', 'Actions'),
+    takeScreenshot: p('takeScreenshot', 'Take a screenshot'),
+    addAnImage: p('addAnImage', 'Add an image'),
+    screenshotUnavailable: p(
+      'screenshotUnavailable',
+      'Screenshot is not available on this page',
+    ),
     sendMessage: p('sendMessage', 'Send message'),
     stopMessage: p('stopMessage', 'Stop message'),
     permissionModeAria: (label) =>
@@ -837,21 +933,71 @@ function build(locale: UiLocale): UiStrings {
     teachClaude: p('teachClaude', 'Teach Claude'),
     teachYourWorkflow: p('teachYourWorkflow', 'Teach Claude your workflow'),
     teachIntroBody: p('teachIntroBody', EN_EXTRA.teachIntroBody!),
+    teachIntroBodyMic: p('teachIntroBodyMic', EN_EXTRA.teachIntroBodyMic!),
     teachStartRecording: p('teachStartRecording', 'Start recording'),
+    teachEnableMic: p('teachEnableMic', 'Enable microphone'),
+    teachSkipMic: p('teachSkipMic', isZh ? '不使用麦克风，直接开始' : 'Start without microphone'),
+    teachMicDenied: p(
+      'teachMicDenied',
+      isZh
+        ? '麦克风权限被拒绝。你仍可无语音录制点击，或在设置页允许麦克风。'
+        : EN_EXTRA.teachMicDenied!,
+    ),
+    teachMicAllowHint: p(
+      'teachMicAllowHint',
+      isZh
+        ? '请选择「在访问该网站时允许」，以便 Teach Claude 能持续使用语音旁白。'
+        : EN_EXTRA.teachMicAllowHint!,
+    ),
+    teachMicBanner: p(
+      'teachMicBanner',
+      isZh
+        ? '启用麦克风以进行语音旁白。当前正在无语音录制。'
+        : EN_EXTRA.teachMicBanner!,
+    ),
+    teachGrantMic: p('teachGrantMic', isZh ? '允许麦克风' : 'Allow microphone'),
+    teachGrantMicHint: p(
+      'teachGrantMicHint',
+      isZh
+        ? '用于录制流程时的可选语音旁白。不授权也能录制点击。'
+        : EN_EXTRA.teachGrantMicHint!,
+    ),
+    teachMicStatusGranted: p(
+      'teachMicStatusGranted',
+      isZh ? '已允许麦克风' : 'Microphone allowed',
+    ),
+    teachMicStatusDenied: p(
+      'teachMicStatusDenied',
+      isZh
+        ? '麦克风被拦截 — 请在站点控件中允许或重试'
+        : EN_EXTRA.teachMicStatusDenied!,
+    ),
+    teachMicStatusPrompt: p(
+      'teachMicStatusPrompt',
+      isZh ? '尚未启用麦克风' : 'Microphone not enabled yet',
+    ),
     teachRecording: p('teachRecording', 'Recording'),
     teachPaused: p('teachPaused', 'Paused'),
     teachPause: p('teachPause', 'Pause'),
     teachResume: p('teachResume', 'Resume'),
     teachStop: p('teachStop', 'Stop'),
+    teachDiscard: p('teachDiscard', 'Discard'),
+    teachDone: p('teachDone', 'Done'),
     teachVoice: p('teachVoice', 'Voice'),
     teachVoiceOn: p('teachVoiceOn', 'Listening…'),
-    teachClickHint: p('teachClickHint', 'Click elements on the page to record steps.'),
+    teachClickHint: p(
+      'teachClickHint',
+      'Click through your task to record each step',
+    ),
     teachStep: p('teachStep', 'step'),
     teachSteps: p('teachSteps', 'steps'),
     teachSaveTitle: p('teachSaveTitle', 'Save workflow'),
     teachNameLabel: p('teachNameLabel', 'Name'),
     teachSaveAndRun: p('teachSaveAndRun', 'Save & run'),
     teachSaveOnly: p('teachSaveOnly', 'Save only'),
+    teachSaveAsShortcut: p('teachSaveAsShortcut', 'Save as shortcut'),
+    teachGenerating: p('teachGenerating', 'Generating…'),
+    teachLoading: p('teachLoading', 'Loading…'),
     teachDefaultTitle: p('teachDefaultTitle', 'Recorded workflow'),
     teachNeedPage: p('teachNeedPage', EN_EXTRA.teachNeedPage!),
     teachNoSteps: p('teachNoSteps', 'Record at least one step before saving.'),
@@ -926,6 +1072,64 @@ export function normalizeUiLocale(locale: string | undefined | null): UiLocale {
   if (lower.startsWith('ru')) return 'ru-RU';
   if (lower.startsWith('hi')) return 'hi-IN';
   if (lower.startsWith('id')) return 'id-ID';
+  return 'en-US';
+}
+
+/**
+ * Official Claude in Chrome 1.0.81 (constants-CDphNmxK `k`):
+ *   1. exact match on navigator.language against supported packs
+ *   2. else first pack whose prefix is `lang-`
+ *   3. else en-US
+ *
+ * We also accept chrome.i18n.getUILanguage() and our extra packs (zh/ru).
+ */
+export function detectBrowserUiLocale(): UiLocale {
+  const candidates: string[] = [];
+  try {
+    if (typeof navigator !== 'undefined') {
+      if (navigator.language) candidates.push(navigator.language);
+      if (Array.isArray(navigator.languages)) candidates.push(...navigator.languages);
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (typeof chrome !== 'undefined' && chrome.i18n?.getUILanguage) {
+      candidates.push(chrome.i18n.getUILanguage());
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const supported = Object.keys(PACKS) as UiLocale[];
+
+  for (const raw of candidates) {
+    if (!raw) continue;
+    const exact = raw.replace('_', '-');
+    if ((PACKS as Record<string, Pack>)[exact]) return exact as UiLocale;
+    // Case-insensitive exact (zh-cn → need normalize)
+    const norm = normalizeUiLocale(exact);
+    // Only accept normalize result if it actually relates to the tag
+    // (normalize always returns something; prefer prefix match like official)
+    const lower = exact.toLowerCase();
+    if (lower === norm.toLowerCase()) return norm;
+    if (lower.startsWith('zh') || lower.startsWith('ja') || lower.startsWith('ko') ||
+        lower.startsWith('de') || lower.startsWith('fr') || lower.startsWith('es') ||
+        lower.startsWith('pt') || lower.startsWith('it') || lower.startsWith('ru') ||
+        lower.startsWith('hi') || lower.startsWith('id') || lower.startsWith('en')) {
+      return norm;
+    }
+  }
+
+  // Official fallback path: lang prefix → first supported `lang-*`
+  for (const raw of candidates) {
+    if (!raw) continue;
+    const lang = raw.replace('_', '-').split('-')[0]?.toLowerCase();
+    if (!lang) continue;
+    const hit = supported.find((id) => id.toLowerCase().startsWith(`${lang}-`));
+    if (hit) return hit;
+  }
+
   return 'en-US';
 }
 

@@ -117,18 +117,181 @@ export interface CaptureResult {
 }
 
 /**
+ * Official-style full-tab capture via chrome.tabs.captureVisibleTab.
+ * No debugger banner. Used as primary path for plain screenshots; CDP
+ * Page.captureScreenshot remains for clip/zoom and as fallback.
+ */
+export async function captureVisible(
+  tabId: number,
+): Promise<CaptureResult | null> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.windowId === undefined) return null;
+
+    // Force activation like official kZ.captureVisibleTab (sidepanel steals focus).
+    if (!tab.active) {
+      await chrome.tabs.update(tabId, { active: true });
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    try {
+      const win = await chrome.windows.get(tab.windowId);
+      if (!win.focused) {
+        await chrome.windows.update(tab.windowId, { focused: true });
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    } catch {
+      /* focus best-effort */
+    }
+
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+      format: 'jpeg',
+      quality: 85,
+    });
+    const m = /^data:(image\/\w+);base64,(.+)$/.exec(dataUrl);
+    if (!m) return null;
+    const mediaType = (m[1] === 'image/png' ? 'image/png' : 'image/jpeg') as
+      | 'image/png'
+      | 'image/jpeg';
+    let data = m[2]!;
+
+    // Best-effort CSS size from tab — model coords ≈ CSS when scale≈1 on typical panels.
+    let cssWidth = 1280;
+    let cssHeight = 720;
+    let dpr = 1;
+    try {
+      // Prefer real viewport via a light script injection (no debugger).
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => ({
+          w: window.innerWidth,
+          h: window.innerHeight,
+          dpr: window.devicePixelRatio || 1,
+        }),
+      });
+      if (result && typeof result === 'object') {
+        const r = result as { w?: number; h?: number; dpr?: number };
+        if (r.w) cssWidth = r.w;
+        if (r.h) cssHeight = r.h;
+        if (r.dpr) dpr = r.dpr;
+      }
+    } catch {
+      /* restricted page — keep defaults */
+    }
+
+    // Downscale in canvas if over API budget.
+    let imageWidth = cssWidth;
+    let imageHeight = cssHeight;
+    let scale = Math.min(TARGET_MAX_WIDTH / cssWidth, TARGET_MAX_HEIGHT / cssHeight, 1);
+    let quality = 0.85;
+    let note: string | undefined;
+
+    if (data.length > MAX_BASE64_CHARS || scale < 1) {
+      const resized = await downscaleDataUrl(dataUrl, scale, quality);
+      if (resized) {
+        data = resized.data;
+        imageWidth = resized.width;
+        imageHeight = resized.height;
+        scale = resized.width / cssWidth;
+        quality = resized.quality;
+        if (data.length > MAX_BASE64_CHARS) {
+          note =
+            'Screenshot was heavily downscaled to fit size limits. ' +
+            'Zoom into a smaller region if you need to read fine detail.';
+        }
+      }
+    } else {
+      imageWidth = Math.round(cssWidth * scale);
+      imageHeight = Math.round(cssHeight * scale);
+    }
+
+    contexts.set(tabId, {
+      cssWidth,
+      cssHeight,
+      imageWidth,
+      imageHeight,
+      scale: imageWidth / cssWidth,
+      devicePixelRatio: dpr,
+      capturedAt: Date.now(),
+    });
+
+    return {
+      data,
+      mediaType,
+      width: imageWidth,
+      height: imageHeight,
+      quality,
+      truncatedNote: note,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function downscaleDataUrl(
+  dataUrl: string,
+  scale: number,
+  quality: number,
+): Promise<{ data: string; width: number; height: number; quality: number } | null> {
+  try {
+    // OffscreenCanvas / createImageBitmap work in extension pages.
+    const blob = await (await fetch(dataUrl)).blob();
+    const bitmap = await createImageBitmap(blob);
+    let w = Math.max(1, Math.round(bitmap.width * Math.min(scale, 1)));
+    let h = Math.max(1, Math.round(bitmap.height * Math.min(scale, 1)));
+    // Also cap by TARGET in device pixels of the source image.
+    const cap = Math.min(TARGET_MAX_WIDTH / w, TARGET_MAX_HEIGHT / h, 1);
+    w = Math.max(1, Math.round(w * cap));
+    h = Math.max(1, Math.round(h * cap));
+
+    let q = quality;
+    for (const step of [q, ...QUALITY_LADDER]) {
+      q = step;
+      const canvas = new OffscreenCanvas(w, h);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.drawImage(bitmap, 0, 0, w, h);
+      const out = await canvas.convertToBlob({ type: 'image/jpeg', quality: q });
+      const buf = await out.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      }
+      const b64 = btoa(binary);
+      if (b64.length <= MAX_BASE64_CHARS) {
+        bitmap.close();
+        return { data: b64, width: w, height: h, quality: q };
+      }
+      // shrink further
+      w = Math.max(1, Math.round(w * 0.75));
+      h = Math.max(1, Math.round(h * 0.75));
+    }
+    bitmap.close();
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 截图。
  *
  * 流程：
- *  1. 读视口尺寸和 DPR
- *  2. 算出把画面塞进 TARGET_MAX_* 需要的缩放比
- *  3. 先试 PNG（无损，文字最清楚）
- *  4. PNG 超限就切 JPEG，沿质量阶梯往下降，直到进限制
+ *  1. 无 clip 时优先 captureVisibleTab（官方路径，无调试横幅）
+ *  2. 失败或需要 clip/zoom 时走 CDP Page.captureScreenshot
+ *  3. 读视口尺寸和 DPR，算出 TARGET_MAX_* 缩放
+ *  4. PNG 超限就切 JPEG，沿质量阶梯往下降
  */
 export async function capture(
   tabId: number,
   opts: CaptureOptions = {},
 ): Promise<CaptureResult> {
+  // Official primary path for full-frame shots — no debugger required.
+  if (!opts.clip && !opts.fillViewport) {
+    const visible = await captureVisible(tabId);
+    if (visible) return visible;
+  }
+
   await ensureDomain(tabId, 'Page');
   const { cssWidth, cssHeight, dpr } = await readViewport(tabId);
 

@@ -1,9 +1,15 @@
 /**
  * Teach Claude / Record workflow — step model aligned with official
- * sidepanel capture (`action:"click"|…`, selector, speechTranscript, …).
+ * Claude in Chrome 1.0.81 capture pipeline.
  */
 
-export type WorkflowAction = 'click' | 'type' | 'navigate' | 'note';
+export type WorkflowAction =
+  | 'click'
+  | 'type'
+  | 'navigate'
+  | 'create_tab'
+  | 'note'
+  | 'narration';
 
 export interface WorkflowStep {
   id: string;
@@ -15,12 +21,22 @@ export interface WorkflowStep {
   tagName?: string;
   /** Typed text (for type steps). */
   text?: string;
+  /** Alias used by official type steps. */
+  value?: string;
   /** True when the typed text was masked (password / sensitive field). */
   masked?: boolean;
   timestamp: number;
   speechTranscript?: string;
   clickPosition?: { x: number; y: number };
   viewportDimensions?: { width: number; height: number };
+  /** JPEG base64 (no data: prefix). Stripped before persisting shortcuts. */
+  screenshot?: string;
+  tabId?: number;
+  /** Pending type step still receiving keystrokes. */
+  isPending?: boolean;
+  /** LLM is rewriting description. */
+  isEnhancing?: boolean;
+  elementAttributes?: Record<string, string>;
 }
 
 export interface WorkflowRecordingMeta {
@@ -33,7 +49,7 @@ export function newStepId(): string {
   return `ws_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
-/** Build a reusable shortcut prompt from recorded steps. */
+/** Build a reusable shortcut prompt from recorded steps (local fallback). */
 export function buildWorkflowPrompt(
   steps: WorkflowStep[],
   meta: WorkflowRecordingMeta,
@@ -53,8 +69,9 @@ export function buildWorkflowPrompt(
     const n = i + 1;
     let line = `${n}. [${s.action}] ${s.description}`;
     if (s.selector) line += ` (selector hint: ${s.selector})`;
-    if (s.url && s.action === 'navigate') line += ` → ${s.url}`;
-    if (s.text) line += ` text=${JSON.stringify(s.text)}`;
+    if (s.url && (s.action === 'navigate' || s.action === 'create_tab')) line += ` → ${s.url}`;
+    const typed = s.text ?? s.value;
+    if (typed) line += ` text=${JSON.stringify(typed)}`;
     if (s.masked) line += ' (sensitive value was masked — ask the user for it at run time)';
     if (s.speechTranscript) line += `\n   User said: "${s.speechTranscript}"`;
     lines.push(line);
@@ -66,6 +83,7 @@ export function buildWorkflowPrompt(
     '- Prefer read_page / find to locate elements by name; fall back to coordinates if needed.',
     '- Do not invent extra steps. If a step fails, report and stop or ask.',
     '- Never click file inputs; use upload tools if a step needs a file.',
+    '- If the prompt lists dynamic inputs, ask the user for them first.',
   );
 
   return lines.join('\n');
@@ -78,4 +96,20 @@ export function slugCommand(title: string): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, 32);
   return base || `workflow-${Date.now().toString(36).slice(-4)}`;
+}
+
+/** URLs where scripting / capture is blocked (official fK). */
+export function isRecordableUrl(url: string | undefined | null): boolean {
+  if (!url) return false;
+  return !(
+    url.startsWith('chrome://') ||
+    url.startsWith('chrome-extension://') ||
+    url.startsWith('about:') ||
+    url.startsWith('edge://') ||
+    url.startsWith('brave://') ||
+    url.startsWith('devtools://') ||
+    url.startsWith('chrome-search://') ||
+    url.startsWith('https://chrome.google.com/webstore') ||
+    url.startsWith('https://chromewebstore.google.com')
+  );
 }

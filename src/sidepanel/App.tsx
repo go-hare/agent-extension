@@ -11,7 +11,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Composer, StatusLine, type SlashCommand } from './components/Composer';
+import { Composer, type SlashCommand } from './components/Composer';
 import { EmptyState } from './components/EmptyState';
 import { Header } from './components/Header';
 import { TodoList } from './components/TodoList';
@@ -31,6 +31,7 @@ import { listShortcuts, type Shortcut } from '@/shortcuts/store';
 import { UiLocaleProvider, useUi } from '@/i18n/UiLocaleContext';
 import { getUiStrings, type UiLocale } from '@/i18n/ui';
 import { loadOnboarding, patchOnboarding, type OnboardingFlags } from '@/onboarding/store';
+import { createSchedule } from '@/scheduling/store';
 
 export function App() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -136,6 +137,33 @@ function AppShell({
     clearTodos();
   }, [session]);
 
+  /**
+   * Official FZ “Convert to task”: turn the current chat into a Scheduled entry.
+   * Full official path asks the model for XML (title/prompt/frequency/url);
+   * our MVP seeds Options → Scheduled from the last user turn so the menu
+   * works end-to-end without a separate conversion surface.
+   */
+  const onConvertToTask = useCallback(async () => {
+    if (session.running) return;
+    const users = session.items.filter((i) => i.kind === 'user');
+    if (users.length === 0) return;
+
+    const last = users[users.length - 1]!;
+    const raw = last.text.replace(/\s+/g, ' ').trim();
+    if (!raw) return;
+
+    const title = (raw.length > 50 ? `${raw.slice(0, 47)}…` : raw) || 'Converted task';
+    // Prefer the final user instruction; earlier turns are often setup/noise.
+    await createSchedule({
+      title,
+      prompt: raw,
+      everyMinutes: 24 * 60, // daily — closest to official recurring default
+      tabUrl: session.tab?.url,
+    });
+    // Land in Options so the user can edit cadence / pause / delete.
+    void chrome.runtime.openOptionsPage();
+  }, [session.items, session.running, session.tab?.url]);
+
   const finishBeforeYouStart = useCallback(() => {
     void patchOnboarding({ beforeYouStartDone: true }).then(setOnboarding);
   }, []);
@@ -147,8 +175,10 @@ function AppShell({
   const configured = hasUsableCredentials(settings);
   const empty = session.items.length === 0;
 
-  const steps = session.items.filter((i) => i.kind === 'tool').length;
-  const status = session.awaitingPermission ? t.waitingForPermission : t.working;
+  // Official: Working/status lives in-transcript (StatusPill), not above the composer.
+  const statusText = session.awaitingPermission
+    ? t.waitingForPermission
+    : t.working;
 
   const send = session.send;
   const openTeach = useCallback(() => setTeachPhase('intro'), []);
@@ -282,17 +312,23 @@ function AppShell({
         tabTitle={session.tab?.title}
         tabUrl={session.tab?.url}
         canClear={!empty || todos.length > 0}
+        isAgentRunning={session.running}
+        hasMessages={!empty}
         onClear={onClear}
         onOpenOptions={openOptions}
         onSelectModel={onSelectModel}
         onSelectLocale={onSelectLocale}
-        onOpenCowork={() => setExplainer('cowork')}
-        onOpenPairing={() => setExplainer('pairing')}
+        onConvertToTask={onConvertToTask}
       />
 
       <TodoList items={todos} />
 
-      <Transcript items={session.items} onAnswer={session.answer}>
+      <Transcript
+        items={session.items}
+        onAnswer={session.answer}
+        running={session.running}
+        statusText={statusText}
+      >
         {showPin ? (
           <PinOnboarding onDismiss={dismissPin} />
         ) : (
@@ -305,9 +341,13 @@ function AppShell({
         )}
       </Transcript>
 
+      {/*
+        Official sticky (sidepanel chatInput):
+          children: [TipTapEditor(composer + Hz3uf5n9Ga disclaimer), hairline h-0.5]
+        Working/status is NOT here — it lives in-transcript (StatusPill / DC).
+        No token usage row under the disclaimer.
+      */}
       <div className="sticky bottom-0 mx-auto w-full z-[5]">
-        <div className="bg-bg-100 h-0.5" />
-        {session.running ? <StatusLine label={status} steps={steps} /> : null}
         <Composer
           empty={empty}
           running={session.running}
@@ -318,14 +358,20 @@ function AppShell({
           onStop={session.stop}
           commands={commands}
           onTeach={openTeach}
+          tabUrl={session.tab?.url}
+          tabId={session.tab?.id}
         />
-        <div className="flex items-center justify-center gap-2 px-4 py-1.5">
-          {session.usage.inputTokens + session.usage.outputTokens > 0 ? (
-            <span className="font-small text-[0.6875rem] text-text-500">
-              {fmt(session.usage.inputTokens)} in · {fmt(session.usage.outputTokens)} out
-            </span>
-          ) : null}
+        <div className="flex justify-center py-1.5 text-text-500 bg-bg-100">
+          <a
+            href="https://support.anthropic.com/en/articles/8525154-claude-is-providing-incorrect-or-misleading-responses-what-s-going-on"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[11px] hover:text-text-300 transition-colors text-center px-3"
+          >
+            {t.aiDisclaimer}
+          </a>
         </div>
+        <div className="bg-bg-100 h-0.5" />
       </div>
 
       {explainer ? (
@@ -343,8 +389,3 @@ function AppShell({
   );
 }
 
-function fmt(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
-  return `${(n / 1_000_000).toFixed(1)}M`;
-}

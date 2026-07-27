@@ -227,15 +227,36 @@ const computerTool: Tool = {
       if (blocked) return blocked;
     }
 
-    const attachErr = await ensureAttached(tabId);
-    if (attachErr) return attachErr;
+    // screenshot: official uses captureVisibleTab — no debugger. Only attach for
+    // actions that need CDP Input / Page.captureScreenshot clip.
+    const needsDebugger = action !== 'screenshot';
+    if (needsDebugger) {
+      const attachErr = await ensureAttached(tabId);
+      if (attachErr) return attachErr;
+    }
 
     try {
       switch (action) {
         case 'screenshot': {
           await hideIndicator(tabId);
           await delay(80);
-          const s = await shot.capture(tabId);
+          // Prefer captureVisibleTab (no "debugging this browser" banner).
+          // Falls back to CDP inside shot.capture when visible capture fails.
+          let s: Awaited<ReturnType<typeof shot.capture>>;
+          try {
+            s = await shot.capture(tabId);
+          } catch (e) {
+            // Last resort: force re-attach + CDP
+            const attachErr = await ensureAttached(tabId);
+            if (attachErr) {
+              return {
+                error:
+                  `${msg(e)}. ${attachErr.error ?? ''} ` +
+                  `Try a normal https page, close DevTools on the tab, and retry screenshot.`,
+              };
+            }
+            s = await shot.capture(tabId);
+          }
           const entry = putScreenshot({
             data: s.data,
             mediaType: s.mediaType,

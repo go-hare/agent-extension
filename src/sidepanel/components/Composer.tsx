@@ -26,10 +26,22 @@ import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Placeholder } from '@tiptap/extensions';
 import { cn } from './cn';
-import { CaretDown, CheckIcon, MousePointerClick, Paperclip, SendIcon, StopIcon, X } from './icons';
+import {
+  AskModeIcon,
+  AttachIcon,
+  Camera,
+  CaretDown,
+  CheckIcon,
+  ImageIcon,
+  SendIcon,
+  SkipModeIcon,
+  StopIcon,
+  TeachIcon,
+  X,
+} from './icons';
 import { SkipConfirm } from './SkipConfirm';
 import type { Settings } from '@/shared/types';
-import { putUserFile, putUserImage } from '@/media/catalog';
+import { putUserImage } from '@/media/catalog';
 import type { OutgoingAttachment } from '@/sidepanel/state/useSession';
 import { useUi } from '@/i18n/UiLocaleContext';
 
@@ -59,6 +71,26 @@ export interface ComposerProps {
   commands: SlashCommand[];
   /** Open Teach Claude / Record workflow. */
   onTeach?: () => void;
+  /** Anchored tab — used by Actions → Take a screenshot */
+  tabUrl?: string;
+  tabId?: number;
+}
+
+/** Official DM: pages where captureVisibleTab is blocked / useless. */
+const SCREENSHOT_BLOCKED: RegExp[] = [
+  /^chrome:/i,
+  /^chrome-extension:/i,
+  /^edge:/i,
+  /^about:/i,
+  /^devtools:/i,
+  /^view-source:/i,
+  /^https?:\/\/chrome\.google\.com\/webstore/i,
+  /^https?:\/\/chromewebstore\.google\.com/i,
+];
+
+function canTakeScreenshot(url?: string): boolean {
+  if (!url) return false;
+  return !SCREENSHOT_BLOCKED.some((re) => re.test(url));
 }
 
 const MAX_ATTACH = 5;
@@ -91,11 +123,14 @@ export function Composer({
   onStop,
   commands,
   onTeach,
+  tabUrl,
+  tabId,
 }: ComposerProps) {
   const ui = useUi();
   const [text, setText] = useState('');
   const [rotation, setRotation] = useState(0);
   const [modeOpen, setModeOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState('');
   const [slashIndex, setSlashIndex] = useState(0);
@@ -103,7 +138,9 @@ export function Composer({
   const [attachments, setAttachments] = useState<OutgoingAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   const modeRef = useRef<HTMLDivElement>(null);
+  const actionsRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const screenshotOk = canTakeScreenshot(tabUrl);
 
   const rotatingPlaceholders = useMemo(
     () => [ui.howCanIHelp, ui.typeSlashCommands],
@@ -176,44 +213,33 @@ export function Composer({
         error = `"${file.name}" is larger than 5MB.`;
         continue;
       }
+      // Official Actions → "Add an image" only accepts images.
+      if (!file.type.startsWith('image/')) {
+        error = `"${file.name}" is not an image.`;
+        continue;
+      }
       try {
         const data = await readFileAsBase64(file);
-        const isImage = file.type.startsWith('image/');
-        if (isImage) {
-          const mediaType = (
-            file.type === 'image/jpeg' ||
-            file.type === 'image/webp' ||
-            file.type === 'image/gif' ||
-            file.type === 'image/png'
-              ? file.type
-              : 'image/png'
-          ) as 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
-          const entry = putUserImage({
-            data,
-            mediaType,
-            filename: file.name,
-          });
-          next.push({
-            kind: 'image',
-            id: entry.id,
-            name: file.name,
-            mimeType: mediaType,
-            data,
-          });
-        } else {
-          const entry = putUserFile({
-            data,
-            name: file.name,
-            mimeType: file.type || 'application/octet-stream',
-          });
-          next.push({
-            kind: 'file',
-            id: entry.id,
-            name: entry.name,
-            mimeType: entry.mimeType,
-            data,
-          });
-        }
+        const mediaType = (
+          file.type === 'image/jpeg' ||
+          file.type === 'image/webp' ||
+          file.type === 'image/gif' ||
+          file.type === 'image/png'
+            ? file.type
+            : 'image/png'
+        ) as 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+        const entry = putUserImage({
+          data,
+          mediaType,
+          filename: file.name,
+        });
+        next.push({
+          kind: 'image',
+          id: entry.id,
+          name: file.name,
+          mimeType: mediaType,
+          data,
+        });
       } catch {
         error = `Could not read "${file.name}".`;
       }
@@ -223,6 +249,56 @@ export function Composer({
     if (error) setAttachError(error);
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [attachments.length]);
+
+  /** Official DM → Take a screenshot via chrome.tabs.captureVisibleTab. */
+  const onTakeScreenshot = useCallback(async () => {
+    setActionsOpen(false);
+    if (!screenshotOk) {
+      setAttachError(ui.screenshotUnavailable);
+      return;
+    }
+    if (attachments.length >= MAX_ATTACH) {
+      setAttachError(`You can attach at most ${MAX_ATTACH} files per message.`);
+      return;
+    }
+    setAttachError(null);
+    try {
+      let dataUrl: string;
+      if (typeof tabId === 'number') {
+        const tab = await chrome.tabs.get(tabId);
+        dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+          format: 'png',
+        });
+      } else {
+        dataUrl = await chrome.tabs.captureVisibleTab({ format: 'png' });
+      }
+      if (!dataUrl || typeof dataUrl !== 'string') {
+        throw new Error('empty capture');
+      }
+      const comma = dataUrl.indexOf(',');
+      const data = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+      const name = `screenshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+      const entry = putUserImage({
+        data,
+        mediaType: 'image/png',
+        filename: name,
+      });
+      setAttachments((prev) =>
+        [
+          ...prev,
+          {
+            kind: 'image' as const,
+            id: entry.id,
+            name,
+            mimeType: 'image/png' as const,
+            data,
+          },
+        ].slice(0, MAX_ATTACH),
+      );
+    } catch {
+      setAttachError(ui.screenshotUnavailable);
+    }
+  }, [attachments.length, screenshotOk, tabId, ui.screenshotUnavailable]);
 
   const filteredCommands = useMemo(() => {
     const q = slashQuery.toLowerCase();
@@ -374,6 +450,22 @@ export function Composer({
     return () => document.removeEventListener('mousedown', onDown, true);
   }, [modeOpen]);
 
+  useEffect(() => {
+    if (!actionsOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!actionsRef.current?.contains(e.target as Node)) setActionsOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setActionsOpen(false);
+    };
+    document.addEventListener('mousedown', onDown, true);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown, true);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [actionsOpen]);
+
   const onClickSend = () => {
     if (!editor || disabled) return;
     if (submit(editor.getText())) editor.commands.clearContent(true);
@@ -502,8 +594,16 @@ export function Composer({
                 aria-expanded={modeOpen}
                 aria-label={ui.permissionModeAria(modeLabel)}
               >
+                {/* Official _z: raised hand (ask) / fast-forward (skip) before the label */}
+                <div className="w-4 h-4 flex items-center justify-center">
+                  {isSkip ? (
+                    <SkipModeIcon size={16} className="text-text-300" />
+                  ) : (
+                    <AskModeIcon size={12} className="text-text-300" />
+                  )}
+                </div>
                 <span className="text-xs">{modeLabel}</span>
-                <CaretDown size={10} className="text-text-300" />
+                <CaretDown size={12} className="text-text-400" />
               </button>
 
               {modeOpen ? (
@@ -515,12 +615,14 @@ export function Composer({
                     selected={permissionMode === 'ask'}
                     title={ui.askBeforeActing}
                     description={ui.askBeforeActingDesc}
+                    icon={<AskModeIcon size={12} className="text-text-300" />}
                     onClick={() => requestModeChange('ask')}
                   />
                   <ModeOption
                     selected={permissionMode === 'skip'}
                     title={ui.actWithoutAsking}
                     description={ui.actWithoutAskingDesc}
+                    icon={<SkipModeIcon size={16} className="text-text-300" />}
                     onClick={() => requestModeChange('skip')}
                   />
                 </div>
@@ -531,6 +633,7 @@ export function Composer({
               <input
                 ref={fileInputRef}
                 type="file"
+                accept="image/*"
                 multiple
                 className="hidden"
                 onChange={(e) => void onPickFiles(e.target.files)}
@@ -545,23 +648,79 @@ export function Composer({
                     e.stopPropagation();
                     onTeach();
                   }}
-                  className="inline-flex items-center justify-center relative shrink-0 select-none font-medium h-7 w-7 rounded-lg active:scale-95 text-text-300 hover:text-text-200 hover:bg-bg-200 transition-colors disabled:opacity-50"
+                  className="inline-flex items-center justify-center relative shrink-0 select-none font-medium h-7 w-7 rounded-lg active:scale-95 transition-all duration-200 text-text-300 hover:text-text-200 hover:bg-bg-200 disabled:opacity-50"
                 >
-                  <MousePointerClick size={16} />
+                  <TeachIcon size={12} />
                 </button>
               ) : null}
-              <button
-                type="button"
-                aria-label={ui.attachFiles}
-                disabled={disabled || attachments.length >= MAX_ATTACH}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  fileInputRef.current?.click();
-                }}
-                className="inline-flex items-center justify-center relative shrink-0 select-none font-medium h-7 w-7 rounded-lg active:scale-95 text-text-300 hover:text-text-200 hover:bg-bg-200 transition-colors disabled:opacity-50"
-              >
-                <Paperclip size={16} />
-              </button>
+
+              {/* Official DM Actions menu: Take a screenshot · Add an image */}
+              <div ref={actionsRef} className="relative">
+                <button
+                  type="button"
+                  aria-label={ui.actions}
+                  aria-haspopup="menu"
+                  aria-expanded={actionsOpen}
+                  disabled={disabled || attachments.length >= MAX_ATTACH}
+                  title={ui.actions}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setModeOpen(false);
+                    setActionsOpen((v) => !v);
+                  }}
+                  className="hide-focus-ring inline-flex items-center justify-center relative shrink-0 select-none disabled:pointer-events-none disabled:opacity-50 font-medium h-7 w-7 rounded-lg active:scale-95 text-text-300 hover:text-text-200 hover:bg-bg-200 transition-all duration-200"
+                >
+                  <AttachIcon size={12} />
+                </button>
+                {actionsOpen ? (
+                  <div
+                    role="menu"
+                    className="absolute right-0 bottom-full mb-1 z-50 min-w-[220px] rounded-xl border-[0.5px] border-border-300 bg-bg-000 py-1.5 shadow-[0_0.25rem_1.25rem_hsl(var(--always-black)/7.5%)]"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={!screenshotOk}
+                      title={screenshotOk ? undefined : ui.screenshotUnavailable}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!screenshotOk) return;
+                        void onTakeScreenshot();
+                      }}
+                      className={cn(
+                        'font-base flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors',
+                        screenshotOk
+                          ? 'text-text-100 hover:bg-bg-200'
+                          : 'cursor-not-allowed text-text-400 opacity-60',
+                      )}
+                    >
+                      <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                        <Camera
+                          size={16}
+                          className={screenshotOk ? 'text-text-300' : 'text-text-400'}
+                        />
+                      </span>
+                      <span className="flex-1 text-sm">{ui.takeScreenshot}</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActionsOpen(false);
+                        fileInputRef.current?.click();
+                      }}
+                      className="font-base flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text-100 transition-colors hover:bg-bg-200"
+                    >
+                      <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                        <ImageIcon size={16} className="text-text-300" />
+                      </span>
+                      <span className="flex-1 text-sm">{ui.addAnImage}</span>
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+
               {running ? (
                 <button
                   type="button"
@@ -602,11 +761,13 @@ function ModeOption({
   selected,
   title,
   description,
+  icon,
   onClick,
 }: {
   selected: boolean;
   title: string;
   description: string;
+  icon: React.ReactNode;
   onClick: () => void;
 }) {
   return (
@@ -616,27 +777,36 @@ function ModeOption({
       aria-selected={selected}
       onClick={onClick}
       className={cn(
-        'flex w-full items-start gap-2 px-3 py-2 text-left transition-colors',
+        'flex w-full items-start gap-2 px-3 py-2 text-left transition-colors !whitespace-normal',
         selected ? 'bg-bg-200' : 'hover:bg-bg-100',
       )}
     >
-      <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
-        {selected ? <CheckIcon size={12} className="text-text-100" /> : null}
+      {/* Official: mode icon left, check on the right when selected */}
+      <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center text-text-300">
+        {icon}
       </span>
-      <span className="min-w-0">
-        <span className="block font-base text-sm text-text-100">{title}</span>
-        <span className="block font-small text-[0.75rem] text-text-500">{description}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm text-text-200">{title}</span>
+        <span className="block text-xs text-text-400 mt-0.5">{description}</span>
       </span>
+      {selected ? (
+        <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
+          <CheckIcon size={12} className="text-text-100" />
+        </span>
+      ) : null}
     </button>
   );
 }
 
-/** 状态条。running 时显示在输入框上方。官方 shimmer 用 font-claude-response。 */
+/**
+ * @deprecated Official Working lives in-transcript (StatusPill / DC), not above the composer.
+ * Kept only so old imports don't break; App no longer mounts this.
+ */
 export function StatusLine({ label, steps }: { label: string; steps: number }) {
   const ui = useUi();
   return (
     <div className="group/status flex items-center gap-2 px-4 pb-1.5 py-1 text-sm">
-      <span className="text-sm italic font-claude-response relative inline-block mb-1 status-shimmer">
+      <span className="text-sm italic font-claude-response relative inline-block mb-1 shimmertext">
         {label}
       </span>
       {steps > 0 ? (

@@ -81,8 +81,38 @@ async function getTabUrl(tabId: number): Promise<string | undefined> {
   }
 }
 
+/**
+ * Reconcile local session map with chrome.debugger reality.
+ * Sidepanel and SW each have their own Map; after SW detachAll or user
+ * cancelling the banner, we must not trust a stale sessions entry.
+ */
+async function probeAttached(tabId: number): Promise<boolean> {
+  try {
+    if (chrome.debugger.getTargets) {
+      const targets = await chrome.debugger.getTargets();
+      return targets.some((t) => t.tabId === tabId && t.attached);
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    // Fallback: fails fast when not attached.
+    await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+      expression: '1',
+      returnByValue: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function attach(tabId: number): Promise<void> {
-  if (sessions.has(tabId)) return;
+  if (sessions.has(tabId)) {
+    // Stale map entry is the root of "Debugger is not attached" after banner cancel.
+    if (await probeAttached(tabId)) return;
+    sessions.delete(tabId);
+  }
 
   const pending = attachInFlight.get(tabId);
   if (pending) return pending;
@@ -97,8 +127,14 @@ export async function attach(tabId: number): Promise<void> {
       await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      // DevTools 已经占用了这个 tab 的 debugger —— 这是最常见的失败原因
+      // Already attached by us (or another extension context) — treat as success
+      // if commands work; otherwise surface the conflict.
       if (/already attached|Another debugger/i.test(msg)) {
+        if (await probeAttached(tabId)) {
+          sessions.set(tabId, { tabId, attachedAt: Date.now(), enabled: new Set() });
+          void persistAttached();
+          return;
+        }
         throw new CdpError(
           'Another debugger (usually DevTools) is already attached to this tab. ' +
             'Close DevTools for this tab and try again.',

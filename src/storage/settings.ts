@@ -1,3 +1,4 @@
+import { detectBrowserUiLocale } from '@/i18n/ui';
 import { DEFAULT_SETTINGS, type Settings } from '@/shared/types';
 import { STORAGE_KEYS, get, setIfChanged } from './keys';
 
@@ -5,7 +6,12 @@ let cache: Settings | null = null;
 
 export async function loadSettings(): Promise<Settings> {
   const stored = await get<Partial<Settings>>(STORAGE_KEYS.SETTINGS, {});
-  cache = { ...DEFAULT_SETTINGS, ...stored };
+  const next: Settings = { ...DEFAULT_SETTINGS, ...stored };
+  // First run (no saved locale): match browser UI language like official Claude in Chrome.
+  if (!Object.prototype.hasOwnProperty.call(stored, 'locale') || !stored.locale) {
+    next.locale = detectBrowserUiLocale();
+  }
+  cache = next;
   return cache;
 }
 
@@ -18,7 +24,9 @@ export async function loadSettings(): Promise<Settings> {
  * 缓存由 onChanged 监听保持新鲜。
  */
 export function peekSettings(): Settings {
-  return cache ?? DEFAULT_SETTINGS;
+  if (cache) return cache;
+  // Sync path before first loadSettings(): still honour browser language.
+  return { ...DEFAULT_SETTINGS, locale: detectBrowserUiLocale() };
 }
 
 export function hasUsableCredentials(s: Settings = peekSettings()): boolean {
@@ -44,12 +52,20 @@ export function watchSettings(onChange?: (s: Settings) => void): void {
   });
 }
 
-/** 把用户填的 base 归一化成不带尾斜杠、不带 /v1 的形式。 */
+/**
+ * 把用户填的 base 归一化成**根地址**：
+ * - 补全协议
+ * - 去掉尾斜杠
+ * - 若误填了末尾 `/v1` 则剥掉（SDK 路径已含 `/v1/…`，再留会变成 `/v1/v1/…`）
+ *
+ * 不会在根地址上**追加** `/v1`。
+ */
 export function normalizeBaseUrl(raw: string): string {
   let u = raw.trim();
   if (!u) return '';
   if (!/^https?:\/\//i.test(u)) u = `https://${u}`;
   u = u.replace(/\/+$/, '');
+  // Users often paste …/v1 from OpenAI-style docs; strip only a trailing segment.
   u = u.replace(/\/v1$/i, '');
   return u;
 }

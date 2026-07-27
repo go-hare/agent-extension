@@ -15,8 +15,44 @@
 import type { TabContext, TabInfo } from '@/shared/types';
 import { isOperableUrl } from '@/permissions/manager';
 
-/** content script 的注入路径。由 @crxjs 在构建时重写成真实产物名。 */
-const A11Y_SCRIPT = 'src/content/accessibilityTree.ts';
+/**
+ * content script 源码路径（开发 / crx 源映射）。
+ * 生产包里真实文件是 `assets/accessibilityTree.ts-XXXX.js`，
+ * 必须从 manifest.content_scripts 解析，不能写死源路径 —— 否则
+ * executeScript({ files: ['src/content/…'] }) 会静默失败，
+ * 表现为 read_page / get_page_text「Cannot reach the page script」。
+ */
+const A11Y_SCRIPT_SRC = 'src/content/accessibilityTree.ts';
+
+/** 解析已打包的 a11y content script 路径（相对扩展根）。 */
+function resolveA11yScriptFiles(): string[] {
+  try {
+    const manifest = chrome.runtime.getManifest();
+    const fromManifest: string[] = [];
+    for (const cs of manifest.content_scripts ?? []) {
+      for (const js of cs.js ?? []) {
+        // Match both dev source path and hashed dist asset.
+        if (
+          /accessibilityTree|accessibility-tree|accessibility_tree/i.test(js) ||
+          js.includes(A11Y_SCRIPT_SRC)
+        ) {
+          fromManifest.push(js);
+        }
+      }
+    }
+    if (fromManifest.length > 0) {
+      // Prefer hashed asset over raw src path when both appear.
+      fromManifest.sort((a, b) => {
+        const score = (p: string) => (p.startsWith('assets/') ? 0 : 1);
+        return score(a) - score(b);
+      });
+      return [...new Set(fromManifest)];
+    }
+  } catch {
+    /* ignore */
+  }
+  return [A11Y_SCRIPT_SRC];
+}
 
 /**
  * 解析模型给的 tabId。
@@ -231,6 +267,9 @@ export async function sendToPage<T>(
   message: Record<string, unknown>,
   { retryInject = true }: { retryInject?: boolean } = {},
 ): Promise<T> {
+  // Soft preflight: if the tab was open before the extension loaded, or after
+  // a soft navigation, the permanent CS may be missing — inject before first
+  // real message when ping fails (avoids one wasted round-trip only when needed).
   try {
     const res = await chrome.tabs.sendMessage(tabId, message, { frameId: 0 });
     if (res === undefined) throw new Error('empty response');
@@ -238,15 +277,33 @@ export async function sendToPage<T>(
   } catch (e) {
     if (!retryInject) throw wrapPageError(e, tabId);
 
-    // 常见原因：老页面没注入 / SPA 换了 document / 页面刚导航完还没就绪
+    // 常见原因：老页面没注入 / SPA 换了 document / 页面刚导航完还没就绪 /
+    // 生产包 inject 路径写错（src/… 在 dist 不存在）
     const injected = await injectA11yScript(tabId);
     if (!injected) throw wrapPageError(e, tabId);
+
+    // executeScript resolves before the new isolated world finishes registering
+    // onMessage — brief yield matches official re-arm timing.
+    await delay(50);
 
     try {
       const res = await chrome.tabs.sendMessage(tabId, message, { frameId: 0 });
       if (res === undefined) throw new Error('empty response after injection');
       return res as T;
     } catch (e2) {
+      // Second chance: page still loading
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab.status !== 'complete') {
+          await waitForLoad(tabId, 8_000);
+          await injectA11yScript(tabId);
+          await delay(80);
+          const res = await chrome.tabs.sendMessage(tabId, message, { frameId: 0 });
+          if (res !== undefined) return res as T;
+        }
+      } catch {
+        /* fall through */
+      }
       throw wrapPageError(e2, tabId);
     }
   }
@@ -267,17 +324,57 @@ function wrapPageError(e: unknown, tabId: number): Error {
   return new Error(msg);
 }
 
-/** 补注入 a11y 脚本。返回是否成功。 */
+/**
+ * 补注入 a11y 脚本。返回是否成功。
+ *
+ * 依次尝试：
+ *  1. manifest 里登记的真实 assets/… 路径（生产）
+ *  2. 源码路径 src/content/…（crx dev / 部分构建映射）
+ *  3. 主框架 + 失败时不限 frameIds（个别站点 top frameId 非 0）
+ */
 async function injectA11yScript(tabId: number): Promise<boolean> {
+  // Restricted URLs cannot be scripted
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId, frameIds: [0] },
-      files: [A11Y_SCRIPT],
-    });
-    return true;
+    const tab = await chrome.tabs.get(tabId);
+    const url = tab.url ?? tab.pendingUrl ?? '';
+    if (url && !isOperableUrl(url)) return false;
   } catch {
     return false;
   }
+
+  const files = resolveA11yScriptFiles();
+  const attempts: Array<{ frameIds?: number[] }> = [
+    { frameIds: [0] },
+    {}, // all frames in tab — last resort if top frame id is unusual
+  ];
+
+  for (const file of files) {
+    for (const targetExtra of attempts) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId, ...targetExtra },
+          files: [file],
+        });
+        // Verify the isolated world actually has our listener.
+        try {
+          const ping = await chrome.tabs.sendMessage<{ type: string }, { ok?: boolean }>(
+            tabId,
+            { type: 'AGENT_PING' },
+            { frameId: 0 },
+          );
+          if (ping?.ok) return true;
+        } catch {
+          // Inject reported success but listener not up yet — still count as ok;
+          // caller will delay + retry sendMessage.
+          return true;
+        }
+        return true;
+      } catch {
+        /* try next candidate */
+      }
+    }
+  }
+  return false;
 }
 
 /** 页面里有没有活着的 content script。 */

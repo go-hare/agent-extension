@@ -1,6 +1,6 @@
 {
   "extName": {
-    "message": "Claude for Chrome",
+    "message": "Claude",
     "description": "Extension name shown in chrome://extensions and the toolbar."
   },
   "extDescription": {

@@ -64,6 +64,12 @@ export function Options() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [scDraft, setScDraft] = useState({ command: '', title: '', description: '', prompt: '' });
   const [schDraft, setSchDraft] = useState({ title: '', prompt: '', everyMinutes: '15' });
+  const [micRequest, setMicRequest] = useState(false);
+  const [micStatus, setMicStatus] = useState<'unknown' | 'granted' | 'denied' | 'prompt'>(
+    'unknown',
+  );
+  const [micBusy, setMicBusy] = useState(false);
+  const [micMsg, setMicMsg] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -78,6 +84,77 @@ export function Options() {
       setSchedules(await listSchedules());
     })();
   }, []);
+
+  // Official: options.html#permissions?requestMicrophone=true
+  useEffect(() => {
+    const parseHash = () => {
+      const raw = window.location.hash.replace(/^#/, '');
+      const [path, qs] = raw.split('?');
+      const params = new URLSearchParams(qs || '');
+      const want =
+        path === 'permissions' && params.get('requestMicrophone') === 'true';
+      setMicRequest(want);
+      return want;
+    };
+    parseHash();
+    const onHash = () => {
+      parseHash();
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  const refreshMicStatus = useCallback(async () => {
+    try {
+      const st = await navigator.permissions.query({
+        name: 'microphone' as PermissionName,
+      });
+      setMicStatus(st.state === 'granted' ? 'granted' : st.state === 'denied' ? 'denied' : 'prompt');
+      return st.state;
+    } catch {
+      setMicStatus('unknown');
+      return 'unknown';
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshMicStatus();
+  }, [refreshMicStatus, micRequest]);
+
+  const requestMicrophone = useCallback(async () => {
+    const t = getUiStrings(draft.locale);
+    setMicBusy(true);
+    setMicMsg(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((tr) => tr.stop());
+      const state = await refreshMicStatus();
+      if (state === 'granted') {
+        setMicMsg(t.teachMicStatusGranted);
+      } else {
+        // "Allow this time" doesn't persist
+        setMicMsg(t.teachMicAllowHint);
+      }
+    } catch (e) {
+      const name = e instanceof DOMException ? e.name : '';
+      if (name === 'NotAllowedError') {
+        setMicStatus('denied');
+        setMicMsg(t.teachMicDenied);
+      } else if (name === 'NotFoundError') {
+        setMicMsg(t.teachSpeechUnsupported);
+      } else {
+        setMicMsg(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      setMicBusy(false);
+    }
+  }, [draft.locale, refreshMicStatus]);
+
+  // Auto-prompt when opened from Teach Claude Enable microphone CTA
+  useEffect(() => {
+    if (!micRequest) return;
+    void requestMicrophone();
+  }, [micRequest, requestMicrophone]);
 
   useEffect(() => {
     document.title = getUiStrings(draft.locale).optionsTitle;
@@ -171,6 +248,11 @@ export function Options() {
         revert={revert}
         runTest={runTest}
         loadModels={loadModels}
+        micRequest={micRequest}
+        micStatus={micStatus}
+        micBusy={micBusy}
+        micMsg={micMsg}
+        requestMicrophone={requestMicrophone}
       />
     </UiLocaleProvider>
   );
@@ -199,6 +281,11 @@ function OptionsBody({
   revert,
   runTest,
   loadModels,
+  micRequest,
+  micStatus,
+  micBusy,
+  micMsg,
+  requestMicrophone,
 }: {
   draft: Settings;
   saved: Settings;
@@ -217,6 +304,11 @@ function OptionsBody({
   schedules: Schedule[];
   setSchedules: React.Dispatch<React.SetStateAction<Schedule[]>>;
   scDraft: { command: string; title: string; description: string; prompt: string };
+  micRequest: boolean;
+  micStatus: 'unknown' | 'granted' | 'denied' | 'prompt';
+  micBusy: boolean;
+  micMsg: string | null;
+  requestMicrophone: () => Promise<void>;
   setScDraft: React.Dispatch<
     React.SetStateAction<{ command: string; title: string; description: string; prompt: string }>
   >;
@@ -238,7 +330,7 @@ function OptionsBody({
       <p className="font-base mb-8 text-sm text-text-400">{t.optionsIntro}</p>
 
       <Section title={t.sectionApi} note={t.sectionApiNote}>
-        <Field label="Base URL" hint="e.g. https://relay.example.com">
+        <Field label="Base URL" hint="Root only, no /v1 — e.g. http://host:8317 or https://relay.example.com">
           <input
             type="url"
             spellCheck={false}
@@ -456,6 +548,52 @@ function OptionsBody({
       </Section>
 
       <Section title={t.sectionTeach} note={t.sectionTeachNote}>
+        <div
+          id="permissions"
+          className={cn(
+            'rounded-xl border-[0.5px] px-3 py-3 space-y-2',
+            micRequest || micStatus !== 'granted'
+              ? 'border-border-300 bg-bg-000'
+              : 'border-border-200 bg-bg-000/50',
+          )}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="font-base text-sm text-text-100">{t.teachGrantMic}</div>
+              <p className="font-small text-text-400 mt-0.5">{t.teachGrantMicHint}</p>
+              <p className="font-small mt-1 text-text-300">
+                {micStatus === 'granted'
+                  ? t.teachMicStatusGranted
+                  : micStatus === 'denied'
+                    ? t.teachMicStatusDenied
+                    : t.teachMicStatusPrompt}
+              </p>
+              {micMsg ? (
+                <p
+                  className={cn(
+                    'font-small mt-1',
+                    micStatus === 'granted' ? 'text-text-300' : 'text-danger-100',
+                  )}
+                >
+                  {micMsg}
+                </p>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              disabled={micBusy || micStatus === 'granted'}
+              onClick={() => void requestMicrophone()}
+              className={cn(
+                'shrink-0 rounded-lg px-3 py-1.5 font-button text-sm transition-colors',
+                micStatus === 'granted'
+                  ? 'bg-bg-200 text-text-400 cursor-default'
+                  : 'bg-always-black text-oncolor-100 hover:bg-always-black/90',
+              )}
+            >
+              {micBusy ? <SpinnerIcon size={14} className="animate-spin" /> : t.teachGrantMic}
+            </button>
+          </div>
+        </div>
         <Toggle
           checked={draft.teachSpeechEnabled}
           onChange={(v) => patch('teachSpeechEnabled', v)}

@@ -1,55 +1,67 @@
 /**
  * 侧栏头部：模型选择 + 清空 + 菜单。
  *
- * 布局 className 逐字取自原版：
+ * 布局 className 逐字取自原版 BZ / FZ：
  *   外层  flex justify-between items-center px-4 pt-3 pb-3
- *   左侧  flex items-center gap-3
  *   右侧  flex items-center gap-2.5
- *   图标按钮  p-1.5 rounded-md transition-colors text-text-300 hover:bg-bg-300 hover:text-text-100
- *
- * 菜单对齐原版：Settings / Language 子菜单 / Keyboard shortcut。
+ *   溢出菜单 w-[240px]：Convert to task / Settings / Language（子菜单）
  */
 
 import { useEffect, useRef, useState } from 'react';
 import { cn } from './cn';
-import { CaretDown, CheckIcon, MenuIcon, NewChatIcon } from './icons';
+import {
+  CaretDown,
+  CaretRight,
+  CheckIcon,
+  Clock,
+  Globe,
+  MenuIcon,
+  NewChatIcon,
+  SettingsIcon,
+  SpinnerIcon,
+} from './icons';
 import { useUi } from '@/i18n/UiLocaleContext';
 import { UI_LOCALES, type UiLocale } from '@/i18n/ui';
+import { displayNameFromModelId } from '@/shared/modelDisplay';
 
 export interface HeaderProps {
   model: string;
   availableModels: string[];
   locale: UiLocale | string;
-  /** 当前锚定的页面标题，鼠标悬停时给用户确认 agent 在看哪一页 */
+  /** 当前锚定的页面标题（官方 header 不展示 host，保留给菜单/调试用） */
   tabTitle?: string;
   tabUrl?: string;
   canClear: boolean;
+  /** Official FZ: disable Convert while agent is running */
+  isAgentRunning?: boolean;
+  /** Official FZ: has transcript messages (locale change confirm + convert) */
+  hasMessages?: boolean;
   onClear: () => void;
   onOpenOptions: () => void;
   onSelectModel: (model: string) => void;
   onSelectLocale: (locale: UiLocale) => void;
-  onOpenCowork?: () => void;
-  onOpenPairing?: () => void;
+  /** Official “Convert to task” (Z7sL1cCQpI) */
+  onConvertToTask?: () => void | Promise<void>;
 }
 
 export function Header({
   model,
   availableModels,
   locale,
-  tabTitle,
-  tabUrl,
   canClear,
+  isAgentRunning = false,
+  hasMessages = false,
   onClear,
   onOpenOptions,
   onSelectModel,
   onSelectLocale,
-  onOpenCowork,
-  onOpenPairing,
+  onConvertToTask,
 }: HeaderProps) {
   const t = useUi();
 
   return (
     <div className="flex justify-between items-center px-4 pt-3 pb-3">
+      {/* Official BZ: left = model picker only (no tab host chip) */}
       <div className="flex items-center gap-3 min-w-0">
         <ModelPicker
           model={model}
@@ -57,15 +69,6 @@ export function Header({
           onSelect={onSelectModel}
           onOpenOptions={onOpenOptions}
         />
-
-        {tabUrl ? (
-          <span
-            className="font-small text-[0.6875rem] text-text-500 max-w-[7rem] truncate"
-            title={tabTitle ? `${tabTitle}\n${tabUrl}` : tabUrl}
-          >
-            {hostOf(tabUrl)}
-          </span>
-        ) : null}
       </div>
 
       <div className="flex items-center gap-2.5">
@@ -75,10 +78,11 @@ export function Header({
 
         <Menu
           locale={locale}
+          hasMessages={hasMessages}
+          isAgentRunning={isAgentRunning}
           onOpenOptions={onOpenOptions}
           onSelectLocale={onSelectLocale}
-          onOpenCowork={onOpenCowork}
-          onOpenPairing={onOpenPairing}
+          onConvertToTask={onConvertToTask}
         />
       </div>
     </div>
@@ -117,22 +121,31 @@ function ModelPicker({
   }, [open]);
 
   const options = Array.from(new Set([...(model ? [model] : []), ...availableModels]));
+  const label = displayNameFromModelId(model) || t.chooseModel;
+  // Official PZ: single option → plain serif label, no caret / menu
+  const canPick = options.length > 1;
+
+  if (!canPick) {
+    return (
+      <span className="font-ui-serif text-sm text-text-200 pl-1 pr-1 py-1.5 truncate" title={model || undefined}>
+        {label}
+      </span>
+    );
+  }
 
   return (
     <div ref={ref} className="relative min-w-0">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        aria-label={t.modelSelectorAria(model)}
+        aria-label={t.modelSelectorAria(label)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        title={model ? `${model} — click to change` : 'No model selected — click to configure'}
+        title={model ? `${label} (${model})` : 'No model selected — click to configure'}
         className="hide-focus-ring flex items-center gap-1 pl-1 pr-1 py-1.5 text-text-200 rounded-md transition-colors hover:bg-bg-300 cursor-pointer"
       >
-        <span className="font-ui-serif text-sm truncate">
-          {model || t.chooseModel}
-        </span>
-        <CaretDown size={12} className="shrink-0" />
+        <span className="font-ui-serif text-sm truncate">{label}</span>
+        <CaretDown size={12} className="shrink-0 text-text-200" />
       </button>
 
       {open ? (
@@ -140,10 +153,9 @@ function ModelPicker({
           role="listbox"
           className="absolute left-0 top-full mt-1 w-[260px] z-50 max-h-72 overflow-y-auto rounded-lg border-[0.5px] border-border-300 bg-bg-000 py-1 shadow-[0_0.25rem_1.25rem_hsl(var(--always-black)/7.5%)]"
         >
-          {options.length === 0 ? (
-            <div className="px-3 py-2 font-small text-sm text-text-500">{t.noModelsYet}</div>
-          ) : (
-            options.map((m) => (
+          {options.map((m) => {
+            const name = displayNameFromModelId(m) || m;
+            return (
               <button
                 key={m}
                 type="button"
@@ -154,17 +166,24 @@ function ModelPicker({
                   setOpen(false);
                 }}
                 className={cn(
-                  'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors',
+                  'flex w-full items-start gap-2 px-3 py-1.5 text-left text-sm transition-colors',
                   m === model ? 'bg-bg-200 text-text-100' : 'text-text-100 hover:bg-bg-100',
                 )}
               >
-                <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                  {m === model ? <CheckIcon size={12} /> : null}
+                <span className="min-w-0 flex-1">
+                  <span className="block font-ui-serif text-text-200 truncate">{name}</span>
+                  {name !== m ? (
+                    <span className="block font-small text-[0.6875rem] text-text-500 truncate">{m}</span>
+                  ) : null}
                 </span>
-                <span className="min-w-0 flex-1 truncate font-base">{m}</span>
+                {m === model ? (
+                  <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center text-accent-100">
+                    <CheckIcon size={16} />
+                  </span>
+                ) : null}
               </button>
-            ))
-          )}
+            );
+          })}
           <div className="my-1 border-t border-border-300" />
           <button
             type="button"
@@ -211,24 +230,29 @@ function IconButton({
 }
 
 /**
- * 溢出菜单：Settings / Language / Keyboard shortcut（对齐原版）。
+ * 官方 FZ 溢出菜单（Claude in Chrome 1.0.81）：
+ *   Convert to task · Settings · Language ▸（子菜单 flyout）
+ * 不再挂 Cowork / Pairing —— 官方菜单没有这两项。
  */
 function Menu({
   locale,
+  hasMessages,
+  isAgentRunning,
   onOpenOptions,
   onSelectLocale,
-  onOpenCowork,
-  onOpenPairing,
+  onConvertToTask,
 }: {
   locale: UiLocale | string;
+  hasMessages: boolean;
+  isAgentRunning: boolean;
   onOpenOptions: () => void;
   onSelectLocale: (locale: UiLocale) => void;
-  onOpenCowork?: () => void;
-  onOpenPairing?: () => void;
+  onConvertToTask?: () => void | Promise<void>;
 }) {
   const t = useUi();
   const [open, setOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
+  const [converting, setConverting] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -241,7 +265,10 @@ function Menu({
       if (!ref.current?.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') {
+        if (langOpen) setLangOpen(false);
+        else setOpen(false);
+      }
     };
 
     document.addEventListener('mousedown', onDown, true);
@@ -250,7 +277,9 @@ function Menu({
       document.removeEventListener('mousedown', onDown, true);
       document.removeEventListener('keydown', onKey);
     };
-  }, [open]);
+  }, [open, langOpen]);
+
+  const convertDisabled = converting || isAgentRunning || !onConvertToTask || !hasMessages;
 
   return (
     <div ref={ref} className="relative">
@@ -261,9 +290,33 @@ function Menu({
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 top-full mt-1 w-[240px] z-50 rounded-lg border-[0.5px] border-border-300 bg-bg-000 py-1 shadow-[0_0.25rem_1.25rem_hsl(var(--always-black)/7.5%)]"
+          className="absolute right-0 top-full mt-1 w-[240px] z-50 rounded-xl border-[0.5px] border-border-300 bg-bg-000 py-1.5 shadow-[0_0.25rem_1.25rem_hsl(var(--always-black)/7.5%)]"
         >
           <MenuItem
+            disabled={convertDisabled}
+            icon={
+              converting ? (
+                <SpinnerIcon size={16} className="animate-spin text-text-300" />
+              ) : (
+                <Clock size={16} className="text-text-300" />
+              )
+            }
+            onClick={() => {
+              if (convertDisabled || !onConvertToTask) return;
+              setConverting(true);
+              void Promise.resolve(onConvertToTask())
+                .catch(() => undefined)
+                .finally(() => {
+                  setConverting(false);
+                  setOpen(false);
+                });
+            }}
+          >
+            {converting ? t.convertingToTask : t.convertToTask}
+          </MenuItem>
+
+          <MenuItem
+            icon={<SettingsIcon size={16} className="text-text-300" />}
             onClick={() => {
               setOpen(false);
               onOpenOptions();
@@ -272,6 +325,7 @@ function Menu({
             {t.settings}
           </MenuItem>
 
+          {/* Language row + flyout submenu (official: caret right, left-aligned panel) */}
           <div className="relative">
             <button
               type="button"
@@ -279,103 +333,86 @@ function Menu({
               aria-haspopup="menu"
               aria-expanded={langOpen}
               onClick={() => setLangOpen((v) => !v)}
-              className="font-base flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm text-text-100 transition-colors hover:bg-bg-200"
+              className={cn(
+                'font-base flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text-100 transition-colors',
+                langOpen ? 'bg-bg-200' : 'hover:bg-bg-200',
+              )}
             >
-              <span>{t.language}</span>
-              <CaretDown
-                size={12}
-                className={cn(
-                  'text-text-300 transition-transform',
-                  langOpen ? 'rotate-180' : '-rotate-90',
-                )}
-              />
+              <span className="flex h-4 w-4 shrink-0 items-center justify-center text-text-300">
+                <Globe size={16} />
+              </span>
+              <span className="flex-1 text-sm">{t.language}</span>
+              <CaretRight size={16} className="text-text-300 shrink-0" />
             </button>
+
             {langOpen ? (
               <div
                 role="menu"
-                className="font-base absolute right-full top-0 mr-1 !min-w-44 max-h-72 overflow-y-auto rounded-lg border-[0.5px] border-border-300 bg-bg-000 py-1 shadow-[0_0.25rem_1.25rem_hsl(var(--always-black)/7.5%)]"
+                className="language-submenu font-base absolute right-full top-0 mr-1 !min-w-44 max-h-72 overflow-y-auto rounded-xl border-[0.5px] border-border-300 bg-bg-000 py-1.5 shadow-[0_0.25rem_1.25rem_hsl(var(--always-black)/7.5%)] z-[60]"
               >
-                {UI_LOCALES.map((opt) => (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={locale === opt.id}
-                    onClick={() => {
-                      onSelectLocale(opt.id);
-                      setOpen(false);
-                      setLangOpen(false);
-                    }}
-                    className={cn(
-                      'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors',
-                      locale === opt.id
-                        ? 'bg-bg-200 text-text-100'
-                        : 'text-text-100 hover:bg-bg-100',
-                    )}
-                  >
-                    <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                      {locale === opt.id ? <CheckIcon size={12} /> : null}
-                    </span>
-                    <span>{opt.label}</span>
-                  </button>
-                ))}
+                {UI_LOCALES.map((opt) => {
+                  const selected = locale === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={selected}
+                      onClick={() => {
+                        if (opt.id !== locale) onSelectLocale(opt.id);
+                        setOpen(false);
+                        setLangOpen(false);
+                      }}
+                      className={cn(
+                        'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors',
+                        selected ? 'bg-bg-200 text-text-100' : 'text-text-100 hover:bg-bg-100',
+                      )}
+                    >
+                      <span className="flex-1 text-sm">{opt.label}</span>
+                      {selected ? (
+                        <CheckIcon size={14} className="text-accent-200 shrink-0" />
+                      ) : (
+                        <span className="w-3.5 shrink-0" />
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             ) : null}
           </div>
-
-          <MenuItem
-            onClick={() => {
-              setOpen(false);
-              void chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
-            }}
-          >
-            {t.keyboardShortcut}
-          </MenuItem>
-
-          {onOpenCowork ? (
-            <MenuItem
-              onClick={() => {
-                setOpen(false);
-                onOpenCowork();
-              }}
-            >
-              {t.claudeCowork}
-            </MenuItem>
-          ) : null}
-
-          {onOpenPairing ? (
-            <MenuItem
-              onClick={() => {
-                setOpen(false);
-                onOpenPairing();
-              }}
-            >
-              {t.pairingTitle}
-            </MenuItem>
-          ) : null}
         </div>
       ) : null}
     </div>
   );
 }
 
-function MenuItem({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+function MenuItem({
+  onClick,
+  children,
+  icon,
+  disabled,
+}: {
+  onClick: () => void;
+  children: React.ReactNode;
+  icon?: React.ReactNode;
+  disabled?: boolean;
+}) {
   return (
     <button
       type="button"
       role="menuitem"
+      disabled={disabled}
       onClick={onClick}
-      className="font-base w-full px-3 py-1.5 text-left text-sm text-text-100 transition-colors hover:bg-bg-200"
+      className={cn(
+        'font-base flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text-100 transition-colors',
+        disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-bg-200',
+      )}
     >
-      {children}
+      {icon ? (
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center">{icon}</span>
+      ) : null}
+      <span className="text-sm flex-1">{children}</span>
     </button>
   );
 }
 
-function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return url;
-  }
-}

@@ -709,39 +709,100 @@
    * 底下推一条移动的线性渐变。比逐字 opacity 动画便宜得多 ——
    * 这段动画在 agent 跑的整个过程里一直在放，不能占 CPU。
    */
-  .status-shimmer {
-    background: linear-gradient(
+  /*
+   * Official Working text shimmer (`qi` in sidepanel-CEYFzMrx.js +
+   * @keyframes shimmertext in src-DTxMKEcl.css):
+   *   text-always-white/0 bg-gradient-to-r bg-[length:400%_100%]
+   *   from-30% via-always-white/70 to-80% bg-clip-text
+   *   bg-text-400 from-text-400 to-text-400
+   *   animate shimmertext 2.25s infinite
+   *
+   * `.status-shimmer` kept as alias for older call sites (Composer StatusLine).
+   */
+  .status-shimmer,
+  .shimmertext {
+    /* base fill = text-400; highlight sweep = near-white */
+    background-image: linear-gradient(
       90deg,
-      hsl(var(--text-500)) 0%,
-      hsl(var(--text-500)) 35%,
-      hsl(var(--text-100)) 50%,
-      hsl(var(--text-500)) 65%,
-      hsl(var(--text-500)) 100%
+      hsl(var(--text-400)) 0%,
+      hsl(var(--text-400)) 30%,
+      hsl(0 0% 100% / 0.7) 50%,
+      hsl(var(--text-400)) 70%,
+      hsl(var(--text-400)) 100%
     );
-    background-size: 250% 100%;
+    background-size: 400% 100%;
+    background-repeat: no-repeat;
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
-    animation: status-shimmer 2s linear infinite;
+    /* Official keyframe name + duration */
+    animation: shimmertext 2.25s infinite;
   }
 
-  @keyframes status-shimmer {
+  @keyframes shimmertext {
     0% {
-      background-position: 150% 0;
+      background-position: 100% 0;
+    }
+    65% {
+      background-position: 0 0;
     }
     100% {
-      background-position: -50% 0;
+      background-position: 0 0;
+    }
+  }
+
+  /* Back-compat alias (older status-shimmer name). */
+  @keyframes status-shimmer {
+    0% {
+      background-position: 100% 0;
+    }
+    65% {
+      background-position: 0 0;
+    }
+    100% {
+      background-position: 0 0;
+    }
+  }
+
+  /*
+   * Official Claude spark writing sprite (animations-CpPrYwps.js):
+   *   writing: { width:100, height:100, frameCount:8, speed:90 }
+   *   WAAPI: translateY(-n * 12.5%) × 8, duration 720ms, steps(8, jump-none), infinite
+   * Sprite strip viewBox 0 0 100 800 — 8 stacked frames.
+   */
+  .claude-spark-writing {
+    display: block;
+    width: 100%;
+    height: auto;
+    /* 8 frames tall; container clips to 1 frame via aspect-ratio + overflow */
+    animation: claude-spark-writing 720ms steps(8, jump-none) infinite;
+    will-change: transform;
+  }
+
+  @keyframes claude-spark-writing {
+    from {
+      transform: translateY(0%);
+    }
+    to {
+      /* steps(8) holds frames 0..7 at 0, -12.5% … -87.5% of strip height */
+      transform: translateY(-100%);
     }
   }
 
   /* 用户把系统设成"减少动态效果"时，流光停在可读的静态色上。 */
   @media (prefers-reduced-motion: reduce) {
-    .status-shimmer {
+    .status-shimmer,
+    .shimmertext {
       animation: none;
       background: none;
       -webkit-background-clip: border-box;
       background-clip: border-box;
-      color: hsl(var(--text-500));
+      color: hsl(var(--text-400));
+    }
+
+    .claude-spark-writing {
+      animation: none;
+      transform: none;
     }
   }
 }
