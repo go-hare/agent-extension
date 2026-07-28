@@ -19,12 +19,56 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Official UPDATE_PHANTOM_CURSOR — best-effort visual only.
+ * Lives here (not tools/tabs) so cdp never imports the tools layer.
+ * Soft-retries inject once so the orange cursor still appears on tabs that
+ * were open before the extension loaded (manifest CS never ran).
+ */
+async function movePhantomCursor(tabId: number, x: number, y: number): Promise<void> {
+  const payload = { type: 'UPDATE_PHANTOM_CURSOR', x, y };
+  try {
+    await chrome.tabs.sendMessage(tabId, payload, { frameId: 0 });
+    return;
+  } catch {
+    /* fall through to inject */
+  }
+  try {
+    const manifest = chrome.runtime.getManifest();
+    const files: string[] = [];
+    for (const cs of manifest.content_scripts ?? []) {
+      for (const js of cs.js ?? []) {
+        if (/agentIndicator|agent-indicator|agent_indicator|agent-visual/i.test(js)) {
+          files.push(js);
+        }
+      }
+    }
+    if (files.length === 0) files.push('src/content/agentIndicator.ts');
+    // Prefer hashed dist asset over raw src path.
+    files.sort((a, b) => (a.startsWith('assets/') ? 0 : 1) - (b.startsWith('assets/') ? 0 : 1));
+    await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [0] },
+      files: [files[0]!],
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    await chrome.tabs.sendMessage(tabId, payload, { frameId: 0 });
+  } catch {
+    /* chrome:// / still no CS — cursor is best-effort */
+  }
+}
+
+/**
+ * Official: slide phantom cursor + CDP mouseMoved.
+ * Cursor animation is best-effort and must never block real input.
+ */
 export async function mouseMove(
   tabId: number,
   x: number,
   y: number,
   modifiers = 0,
 ): Promise<void> {
+  // Kick off the visible cursor slide in parallel with the real move.
+  const visual = movePhantomCursor(tabId, x, y);
   await send(tabId, 'Input.dispatchMouseEvent', {
     type: 'mouseMoved',
     x,
@@ -33,6 +77,8 @@ export async function mouseMove(
     buttons: 0,
     modifiers,
   });
+  // Prefer letting the slide finish so users see the move (~180ms official).
+  await Promise.race([visual, delay(220)]);
 }
 
 /**
@@ -40,6 +86,7 @@ export async function mouseMove(
  *
  * 先 mouseMoved 再按下 —— 不这么做的话，依赖 hover 状态才显示的元素
  * （下拉菜单项、悬浮工具栏）会点不到，因为它们在 mousedown 那一刻还没渲染。
+ * Official also waits for the phantom-cursor transition before press.
  */
 export async function click(
   tabId: number,
@@ -112,10 +159,14 @@ export async function drag(
 
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
+    const x = Math.round(x0 + (x1 - x0) * t);
+    const y = Math.round(y0 + (y1 - y0) * t);
+    // Visual trail (non-blocking) + real drag path.
+    void movePhantomCursor(tabId, x, y);
     await send(tabId, 'Input.dispatchMouseEvent', {
       type: 'mouseMoved',
-      x: Math.round(x0 + (x1 - x0) * t),
-      y: Math.round(y0 + (y1 - y0) * t),
+      x,
+      y,
       button: 'left',
       buttons: 1,
       modifiers,

@@ -134,10 +134,14 @@ cheapest tool that answers the question:
 
 ### Planning and progress
 
-- **update_plan** — for multi-site or multi-step work that needs user buy-in before
-  you start. Present domains and approach; wait for approval.
+- **update_plan** — present domains + ordered approach to the user and **wait for
+  approval** before acting. In **Ask before acting** mode the runtime **blocks every
+  other tool** until a plan is approved this turn (same as official \`follow_a_plan\`).
+  Read-only curiosity does not bypass that gate — call \`update_plan\` first, then
+  execute. Keep approach outcome-focused, concise (about 3–7 steps), no tool names.
 - **todowrite** — keep a short checklist visible in the side panel for multi-step
   tasks. Replace the whole list each call. Mark one item \`in_progress\` at a time.
+  Frame items as outcomes, not browser tool names.
 
 ### GIF and shortcuts
 
@@ -230,15 +234,20 @@ workaround; solve the task with the other tools or tell the user it is not possi
 }
 
 /**
- * 计划模式的追加提醒。
+ * 计划模式的追加提醒（Ask before acting / official follow_a_plan）。
  *
  * 用 system-reminder 包起来，是为了让模型清楚这是运行时注入的状态，
  * 不是用户说的话 —— 和注入防御的定义保持一致。
+ *
+ * 注意：官方 HG 硬门禁对 **所有** 非 update_plan 工具生效（含只读），
+ * 所以这里不再写 “read-only is fine first”。
  */
 export function planModeReminder(): string {
   return (
-    `<system-reminder>You are in planning mode. Before using any tool that acts on a ` +
-    `page, call update_plan with the domains you will visit and your approach, and wait ` +
-    `for approval. Read-only tools are fine before that.</system-reminder>`
+    `<system-reminder>You are in Ask-before-acting mode (follow_a_plan). ` +
+    `Before using any other tool, call update_plan with the domains you will visit and ` +
+    `your approach, then wait for the user to approve. The runtime rejects every tool ` +
+    `except update_plan until a plan is approved this turn. After approval, proceed; ` +
+    `irreversible actions still need separate confirmation.</system-reminder>`
   );
 }

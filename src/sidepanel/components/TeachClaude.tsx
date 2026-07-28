@@ -8,7 +8,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from './cn';
-import { CloseIcon, ListChecks, MousePointerClick, SpinnerIcon } from './icons';
+import {
+  CloseIcon,
+  ListChecks,
+  MicIcon,
+  MousePointerClick,
+  PauseIcon,
+  PlayIcon,
+  SpinnerIcon,
+} from './icons';
 import { useUi } from '@/i18n/UiLocaleContext';
 import {
   buildWorkflowPrompt,
@@ -360,11 +368,9 @@ export function TeachClaude({
   }, []);
 
   const removeStep = (id: string) => {
+    // Keep RecordingSession in sync while live; always update local list for review.
+    sessionRef.current?.removeStep(id);
     setSteps((prev) => prev.filter((s) => s.id !== id));
-    // Keep session in sync if still recording
-    if (sessionRef.current) {
-      // session doesn't expose remove — only local UI list for review after stop
-    }
   };
 
   useEffect(() => {
@@ -500,64 +506,46 @@ export function TeachClaude({
     );
   }
 
-  // ─── recording ───
+  // ─── recording (official tG) ───
+  // Header: favicon + page title + close
+  // Body: eG step cards (numbered circle, description, optional Tab, screenshot)
+  // Footer: 3-icon grid (Discard / Pause|Play / Mic) + primary Done
   if (phase === 'recording') {
+    const uniqueTabIds = new Set(
+      steps.map((s) => s.tabId).filter((id): id is number => id !== undefined),
+    );
+    const showTabLine = uniqueTabIds.size > 1;
+
     return (
       <div className="flex flex-col h-full bg-bg-100">
+        {/* Official header: page context, not "Recording + text buttons" */}
         <div className="flex items-center justify-between px-4 pt-3 pb-3">
-          <div className="flex items-center gap-2">
-            <span
-              className={cn(
-                'inline-flex items-center gap-1.5 font-base text-sm',
-                paused ? 'text-text-400' : 'text-danger-100',
-              )}
-            >
-              <span
-                className={cn(
-                  'w-2 h-2 rounded-full',
-                  paused ? 'bg-text-400' : 'bg-danger-100 animate-pulse',
-                )}
-              />
-              {paused ? t.teachPaused : t.teachRecording}
+          <div className="flex items-center gap-2 min-w-0">
+            {favicon ? (
+              <img src={favicon} className="w-4 h-4 shrink-0" alt="" />
+            ) : (
+              <MousePointerClick size={16} className="text-text-300 shrink-0" />
+            )}
+            <span className="text-text-200 font-base-sm truncate max-w-[220px]">
+              {displayTitle || tabTitle || hostLabel || t.teachClaude}
             </span>
-            <span className="font-small text-text-500">
-              {steps.length} {steps.length === 1 ? t.teachStep : t.teachSteps}
-            </span>
+            {paused ? (
+              <span className="shrink-0 font-small text-text-400">· {t.teachPaused}</span>
+            ) : (
+              <span className="shrink-0 inline-flex items-center gap-1 font-small text-danger-100">
+                <span className="w-1.5 h-1.5 rounded-full bg-danger-100 animate-pulse" />
+                {t.teachRecording}
+              </span>
+            )}
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void discardRecording()}
-              className="px-2 py-1 rounded-md border-[0.5px] border-border-300 font-small text-text-200 hover:bg-bg-200"
-            >
-              {t.teachDiscard}
-            </button>
-            <button
-              type="button"
-              onClick={() => void togglePause()}
-              className="px-2 py-1 rounded-md border-[0.5px] border-border-300 font-small text-text-200 hover:bg-bg-200"
-            >
-              {paused ? t.teachResume : t.teachPause}
-            </button>
-            <button
-              type="button"
-              onClick={toggleSpeech}
-              className={cn(
-                'px-2 py-1 rounded-md border-[0.5px] border-border-300 font-small hover:bg-bg-200',
-                speechOn ? 'text-brand-100 border-brand-100' : 'text-text-200',
-              )}
-              title={t.teachVoice}
-            >
-              {speechOn ? t.teachVoiceOn : t.teachVoice}
-            </button>
-            <button
-              type="button"
-              onClick={() => void stopRecording()}
-              className="px-2 py-1 rounded-md bg-text-100 text-bg-100 font-small hover:bg-text-200"
-            >
-              {t.teachDone}
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => void discardRecording()}
+            className="p-1.5 rounded-md transition-colors text-text-300 hover:bg-bg-300 hover:text-text-100"
+            aria-label={t.teachDiscard}
+          >
+            <CloseIcon size={12} />
+          </button>
         </div>
 
         {interim ? (
@@ -577,7 +565,7 @@ export function TeachClaude({
         ) : null}
         {error ? <p className="px-4 font-small text-danger-100">{error}</p> : null}
 
-        <div className="flex-1 overflow-y-auto px-3 pb-4 space-y-2">
+        <div className="flex-1 overflow-y-auto px-3 pb-4 space-y-2 min-h-0">
           {steps.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center px-6">
               <ListChecks size={20} className="text-text-400 mb-2" />
@@ -589,8 +577,11 @@ export function TeachClaude({
                 key={s.id}
                 className="group border-[0.5px] border-border-300 rounded-2xl bg-bg-000/30 overflow-hidden"
               >
-                <div className="flex items-start gap-2 px-3 py-3">
-                  <span className="font-small text-text-500 shrink-0 w-5">{i + 1}.</span>
+                <div className="flex items-start gap-2.5 px-3 py-3">
+                  {/* Official eG numbered circle */}
+                  <span className="shrink-0 mt-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-bg-300 text-text-300 font-small">
+                    {i + 1}
+                  </span>
                   <div className="min-w-0 flex-1">
                     <p
                       className={cn(
@@ -601,22 +592,13 @@ export function TeachClaude({
                     >
                       {s.isEnhancing ? t.teachLoading : s.description}
                     </p>
-                    {s.action === 'type' && (s.text || s.value || s.masked) ? (
-                      <p className="font-claude-response-code text-text-300 truncate mt-0.5">
-                        {s.masked ? '••••••••' : s.text || s.value}
-                      </p>
-                    ) : null}
-                    {s.selector ? (
-                      <p className="font-claude-response-code text-text-400 truncate">
-                        {s.selector}
-                      </p>
-                    ) : null}
+                    {/* Official: no raw CSS selector under description */}
                     {s.speechTranscript ? (
                       <p className="font-small text-text-300 italic mt-1">
                         “{s.speechTranscript}”
                       </p>
                     ) : null}
-                    {s.tabId !== undefined ? (
+                    {showTabLine && s.tabId !== undefined ? (
                       <p className="font-small text-text-400 mt-0.5">Tab {s.tabId}</p>
                     ) : null}
                   </div>
@@ -651,6 +633,66 @@ export function TeachClaude({
               </div>
             ))
           )}
+        </div>
+
+        {/* Official tG bottom bar: 3-icon grid + Done */}
+        <div className="mx-auto mb-3 max-w-3xl w-full px-3">
+          <div
+            className="bg-bg-000 border-[0.5px] border-border-300 rounded-[14px] relative z-30"
+            style={{ boxShadow: '0 4px 20px 0 rgba(0, 0, 0, 0.04)' }}
+          >
+            <div className="flex flex-col gap-2 px-3 py-3">
+              <div className="grid grid-cols-3 gap-1">
+                <button
+                  type="button"
+                  onClick={() => void discardRecording()}
+                  className="flex flex-col items-center justify-center gap-1 py-2 rounded-xl text-text-300 hover:bg-bg-200 hover:text-text-100 transition-colors"
+                  title={t.teachDiscard}
+                  aria-label={t.teachDiscard}
+                >
+                  <CloseIcon size={16} />
+                  <span className="font-small">{t.teachDiscard}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void togglePause()}
+                  className="flex flex-col items-center justify-center gap-1 py-2 rounded-xl text-text-300 hover:bg-bg-200 hover:text-text-100 transition-colors"
+                  title={paused ? t.teachResume : t.teachPause}
+                  aria-label={paused ? t.teachResume : t.teachPause}
+                >
+                  {paused ? <PlayIcon size={16} /> : <PauseIcon size={16} />}
+                  <span className="font-small">{paused ? t.teachResume : t.teachPause}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleSpeech}
+                  className={cn(
+                    'flex flex-col items-center justify-center gap-1 py-2 rounded-xl transition-colors',
+                    speechOn
+                      ? 'text-brand-100 bg-brand-100/10 hover:bg-brand-100/15'
+                      : 'text-text-300 hover:bg-bg-200 hover:text-text-100',
+                  )}
+                  title={speechOn ? t.teachVoiceOn : t.teachVoice}
+                  aria-label={speechOn ? t.teachVoiceOn : t.teachVoice}
+                >
+                  <MicIcon size={16} />
+                  <span className="font-small">{speechOn ? t.teachVoiceOn : t.teachVoice}</span>
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => void stopRecording()}
+                className="w-full justify-center flex items-center px-4 py-2.5 rounded-[14px] bg-always-black text-oncolor-100 hover:bg-always-black/90 font-button transition-all"
+              >
+                {t.teachDone}
+                {steps.length > 0 ? (
+                  <span className="ml-1.5 opacity-70 font-small">
+                    · {steps.length} {steps.length === 1 ? t.teachStep : t.teachSteps}
+                  </span>
+                ) : null}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     );

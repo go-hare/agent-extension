@@ -32,6 +32,14 @@ declare global {
     __agentRefCounter?: number;
     __agentGenerateTree?: typeof generateTree;
     __agentResolveRef?: typeof resolveRef;
+    /** Prevents double onMessage when scripting re-injects this file. */
+    __agentA11yBootstrapped?: boolean;
+    /** Latest message handler — re-inject refreshes this without stacking listeners. */
+    __agentA11yHandle?: (
+      msg: { type?: string; [k: string]: unknown },
+      sender: chrome.runtime.MessageSender,
+      sendResponse: (r: unknown) => void,
+    ) => boolean;
   }
 }
 
@@ -526,7 +534,7 @@ function resolveRef(refId: string): {
     };
   }
   const el = holder.deref();
-  if (!el) {
+  if (!isLiveElement(el)) {
     return {
       ok: false,
       error: `Element "${refId}" no longer exists. Call read_page again for fresh references.`,
@@ -556,11 +564,262 @@ function resolveRef(refId: string): {
 function scrollRefIntoView(refId: string): { ok: boolean; error?: string } {
   ensureMaps();
   const el = window.__agentElementMap![refId]?.deref();
-  if (!el) {
+  if (!isLiveElement(el)) {
     return { ok: false, error: `Element "${refId}" no longer exists. Call read_page again.` };
   }
   el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' as ScrollBehavior });
   return { ok: true };
+}
+
+/**
+ * Alive check for a WeakRef target.
+ * Prefer `isConnected` over `document.contains` — the latter is false for
+ * nodes inside (open) shadow roots even when the element is still live.
+ */
+function isLiveElement(el: Element | undefined | null): el is Element {
+  if (!el) return false;
+  // isConnected covers light DOM + shadow trees.
+  if (typeof el.isConnected === 'boolean') return el.isConnected;
+  return document.contains(el);
+}
+
+/**
+ * form_input via ref — MUST run in the isolated world that owns __agentElementMap.
+ * (Earlier form_input used executeScript world:'MAIN', which cannot see content-script
+ * maps → always "Element ref_N no longer exists".)
+ */
+function formInputByRef(
+  refId: string,
+  value: string | number | boolean,
+): { ok: boolean; error?: string; detail?: string } {
+  ensureMaps();
+  const holder = window.__agentElementMap![refId];
+  if (!holder) {
+    return {
+      ok: false,
+      error: `Element "${refId}" was never seen on this page. Call read_page first.`,
+    };
+  }
+  const el = holder.deref() as
+    | HTMLInputElement
+    | HTMLTextAreaElement
+    | HTMLSelectElement
+    | HTMLElement
+    | undefined;
+  if (!isLiveElement(el)) {
+    return {
+      ok: false,
+      error: `Element "${refId}" no longer exists. Call read_page again for fresh references.`,
+    };
+  }
+
+  const tag = el.tagName.toLowerCase();
+  const type = (el as HTMLInputElement).type?.toLowerCase?.() ?? '';
+
+  // React/Vue listen to the native value setter, not plain property assign.
+  const setNative = (node: HTMLElement, prop: string, v: unknown) => {
+    // Walk prototype chain — React 16+ installs the tracker on HTMLInputElement.prototype.
+    let proto: object | null = Object.getPrototypeOf(node) as object | null;
+    while (proto && proto !== Object.prototype) {
+      const desc = Object.getOwnPropertyDescriptor(proto, prop);
+      if (desc?.set) {
+        desc.set.call(node, v);
+        return;
+      }
+      proto = Object.getPrototypeOf(proto) as object | null;
+    }
+    (node as unknown as Record<string, unknown>)[prop] = v;
+  };
+
+  const fire = (node: HTMLElement, text?: string) => {
+    // Prefer InputEvent so frameworks that check event instanceof InputEvent still update.
+    try {
+      node.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          cancelable: true,
+          data: text ?? null,
+          inputType: 'insertText',
+        }),
+      );
+    } catch {
+      node.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    node.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+
+  try {
+    try {
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' as ScrollBehavior });
+    } catch {
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+    }
+
+    if (tag === 'select') {
+      const sel = el as HTMLSelectElement;
+      const want = String(value).toLowerCase().trim();
+      const opt =
+        [...sel.options].find((o) => o.value.toLowerCase() === want) ??
+        [...sel.options].find((o) => o.text.trim().toLowerCase() === want) ??
+        [...sel.options].find((o) => o.text.trim().toLowerCase().includes(want));
+      if (!opt) {
+        return {
+          ok: false,
+          error:
+            `No option matching "${value}". Available: ` +
+            [...sel.options].map((o) => o.text.trim()).join(' | '),
+        };
+      }
+      sel.focus();
+      setNative(sel, 'value', opt.value);
+      // Also set selectedIndex — some libs only watch that.
+      sel.selectedIndex = opt.index;
+      fire(sel);
+      return { ok: true, detail: `selected "${opt.text.trim()}"` };
+    }
+
+    if (type === 'checkbox' || type === 'radio') {
+      const box = el as HTMLInputElement;
+      const want =
+        typeof value === 'boolean'
+          ? value
+          : !/^(false|0|no|off|unchecked)$/i.test(String(value));
+      if (box.checked !== want) {
+        // click() flips and fires the full trusted-ish listener chain in the page.
+        box.click();
+        // If a preventDefault handler blocked the flip, force it via native setter.
+        if (box.checked !== want) {
+          setNative(box, 'checked', want);
+          fire(box);
+        }
+      }
+      return { ok: true, detail: want ? 'checked' : 'unchecked' };
+    }
+
+    if ((el as HTMLElement).isContentEditable) {
+      el.focus();
+      // Select-all + insert so React controlled contenteditables often pick it up.
+      const text = String(value);
+      try {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      } catch {
+        /* ignore */
+      }
+      el.textContent = text;
+      fire(el, text);
+      return { ok: true, detail: 'set contenteditable text' };
+    }
+
+    // text / number / email / password / textarea / etc.
+    const input = el as HTMLInputElement | HTMLTextAreaElement;
+    const text = String(value);
+    input.focus();
+    // Clear then set — matches user replace-all and trips more onChange handlers.
+    setNative(input, 'value', '');
+    setNative(input, 'value', text);
+    try {
+      // Keep cursor at end for sites that read selectionStart on input.
+      const len = text.length;
+      input.setSelectionRange?.(len, len);
+    } catch {
+      /* not all input types support selection */
+    }
+    fire(input, text);
+    return { ok: true, detail: 'set value' };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Deliver FileList / drop to a ref target — same isolated world as __agentElementMap.
+ * Coordinate-only drops still go through MAIN via upload.ts; ref path must be here.
+ */
+function deliverFilesByRef(
+  refId: string,
+  filePayloads: Array<{ data: string; name: string; mimeType: string }>,
+): { ok: boolean; error?: string; detail?: string } {
+  ensureMaps();
+  const holder = window.__agentElementMap![refId];
+  if (!holder) {
+    return {
+      ok: false,
+      error: `Element "${refId}" was never seen on this page. Call read_page first.`,
+    };
+  }
+  const el = holder.deref();
+  if (!isLiveElement(el)) {
+    return {
+      ok: false,
+      error: `Element "${refId}" no longer exists. Call read_page again for fresh references.`,
+    };
+  }
+
+  try {
+    const dt = new DataTransfer();
+    for (const f of filePayloads) {
+      const bin = atob(f.data);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      const copy = new Uint8Array(arr.byteLength);
+      copy.set(arr);
+      const blob = new Blob([copy], { type: f.mimeType || 'application/octet-stream' });
+      dt.items.add(new File([blob], f.name, { type: f.mimeType || 'application/octet-stream' }));
+    }
+
+    try {
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' as ScrollBehavior });
+    } catch {
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+    }
+
+    const input =
+      el instanceof HTMLInputElement && el.type === 'file'
+        ? el
+        : ((el as HTMLElement).querySelector?.('input[type="file"]') as HTMLInputElement | null) ??
+          ((el as HTMLElement).closest?.('input[type="file"]') as HTMLInputElement | null);
+
+    if (input && input.type === 'file') {
+      try {
+        input.files = dt.files;
+      } catch (e) {
+        return {
+          ok: false,
+          error: `Could not assign files to input: ${e instanceof Error ? e.message : String(e)}`,
+        };
+      }
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return {
+        ok: true,
+        detail: `Set ${dt.files.length} file(s) on <input type="file"> (${refId}).`,
+      };
+    }
+
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const common: DragEventInit = {
+      bubbles: true,
+      cancelable: true,
+      clientX: cx,
+      clientY: cy,
+      dataTransfer: dt,
+    };
+    for (const type of ['dragenter', 'dragover', 'drop'] as const) {
+      el.dispatchEvent(new DragEvent(type, common));
+    }
+    return {
+      ok: true,
+      detail: `Dispatched drop with ${dt.files.length} file(s) on ${refId} at (${Math.round(cx)}, ${Math.round(cy)}).`,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /**
@@ -600,6 +859,8 @@ function extractText(maxChars = 50_000): { text: string; title: string; url: str
 // ─────────────────────── 消息接口 ───────────────────────
 
 // 暴露给同页面的其它注入脚本（调试用），主通路走 message。
+// Always refresh function pointers so a re-inject picks up bugfixes without
+// stacking another onMessage listener (maps/refs stay on window).
 window.__agentGenerateTree = generateTree;
 window.__agentResolveRef = resolveRef;
 
@@ -609,35 +870,60 @@ interface Request {
   options?: Partial<TreeOptions>;
   refId?: string;
   maxChars?: number;
+  value?: string | number | boolean;
+  files?: Array<{ data: string; name: string; mimeType: string }>;
 }
 
-chrome.runtime.onMessage.addListener(
-  (msg: Request, _sender, sendResponse: (r: unknown) => void) => {
-    switch (msg.type) {
-      case 'AGENT_PING':
-        sendResponse({ ok: true, frame: window === window.top ? 'top' : 'child', url: location.href });
-        return false;
+function handleA11yMessage(
+  msg: Request,
+  _sender: chrome.runtime.MessageSender,
+  sendResponse: (r: unknown) => void,
+): boolean {
+  switch (msg?.type) {
+    case 'AGENT_PING':
+      sendResponse({ ok: true, frame: window === window.top ? 'top' : 'child', url: location.href });
+      return false;
 
-      case 'AGENT_GENERATE_TREE':
-        sendResponse(generateTree(msg.options));
-        return false;
+    case 'AGENT_GENERATE_TREE':
+      sendResponse(generateTree(msg.options));
+      return false;
 
-      case 'AGENT_RESOLVE_REF':
-        sendResponse(resolveRef(msg.refId ?? ''));
-        return false;
+    case 'AGENT_RESOLVE_REF':
+      sendResponse(resolveRef(msg.refId ?? ''));
+      return false;
 
-      case 'AGENT_SCROLL_REF':
-        sendResponse(scrollRefIntoView(msg.refId ?? ''));
-        return false;
+    case 'AGENT_SCROLL_REF':
+      sendResponse(scrollRefIntoView(msg.refId ?? ''));
+      return false;
 
-      case 'AGENT_EXTRACT_TEXT':
-        sendResponse(extractText(msg.maxChars));
-        return false;
+    case 'AGENT_FORM_INPUT':
+      sendResponse(formInputByRef(msg.refId ?? '', msg.value as string | number | boolean));
+      return false;
 
-      default:
-        return false;
-    }
-  },
-);
+    case 'AGENT_DELIVER_FILES':
+      sendResponse(deliverFilesByRef(msg.refId ?? '', msg.files ?? []));
+      return false;
+
+    case 'AGENT_EXTRACT_TEXT':
+      sendResponse(extractText(msg.maxChars));
+      return false;
+
+    default:
+      return false;
+  }
+}
+
+// Always point at the latest handler (re-inject picks up bugfixes).
+// Only register ONE chrome listener — stacking them races sendResponse.
+window.__agentA11yHandle = (msg, sender, sendResponse) =>
+  handleA11yMessage(msg as Request, sender, sendResponse);
+if (!window.__agentA11yBootstrapped) {
+  window.__agentA11yBootstrapped = true;
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    const h = window.__agentA11yHandle;
+    if (!h) return false;
+    return h(msg as { type?: string; [k: string]: unknown }, sender, sendResponse);
+  });
+}
 
 export {};

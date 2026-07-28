@@ -20,6 +20,14 @@ import {
   getScheduleByAlarmName,
   resyncAllAlarms,
 } from '@/scheduling/store';
+import {
+  checkNativeHostStatus,
+  getNativeHostStatusSnapshot,
+  installNativeHost,
+  postMcpNotification,
+  reconnectNativeHost,
+  tryConnectNativeHost,
+} from '@/mcp/nativeHost';
 
 // ───────────────────────── 侧栏开关 ─────────────────────────
 
@@ -37,11 +45,14 @@ chrome.runtime.onInstalled.addListener(async () => {
     /* 老版本 Chrome 没有这个 API */
   }
   await loadSettings();
+  // Official: probe Desktop / Claude Code native hosts after install/update.
+  void tryConnectNativeHost();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await loadSettings();
   await reclaimStaleSessions();
+  void tryConnectNativeHost();
 });
 
 /**
@@ -113,13 +124,23 @@ type Msg =
   | { type: 'PLAY_NOTIFICATION_SOUND' }
   | { type: 'SHOW_NOTIFICATION'; title: string; message: string }
   | { type: 'RESIZE_WINDOW'; windowId: number; width: number; height: number }
+  // Official open MCP status (Desktop / Claude Code native host)
+  // snake_case = official message names; SCREAMING = our Options aliases
+  | { type: 'CHECK_NATIVE_HOST_STATUS' | 'check_native_host_status' }
+  | { type: 'RECONNECT_NATIVE_HOST' | 'reconnect_native_host' }
+  | { type: 'SEND_MCP_NOTIFICATION'; method?: string; params?: unknown }
   // Teach Claude ephemeral inject messages; SW ignores so sidepanel receives them.
   | { type: 'ELEMENT_SELECTION' }
   | { type: 'KEYSTROKE_UPDATE' }
   | { type: 'CANCEL_ELEMENT_SELECTOR' }
-  | { type: 'WORKFLOW_STEP'; step?: unknown };
+  | { type: 'WORKFLOW_STEP'; step?: unknown }
+  // Official agent-visual-indicator → sidepanel
+  | { type: 'STOP_AGENT'; fromTabId?: string | number }
+  | { type: 'STATIC_INDICATOR_HEARTBEAT' }
+  | { type: 'SWITCH_TO_MAIN_TAB' }
+  | { type: 'DISMISS_STATIC_INDICATOR_FOR_GROUP' };
 
-chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg: Msg, sender, sendResponse) => {
   switch (msg?.type) {
     case 'OPEN_OPTIONS':
       void chrome.runtime.openOptionsPage();
@@ -145,6 +166,98 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
         );
       return true; // 异步回复
 
+    // Official check_native_host_status — Options / ProductExplainer / host UI.
+    case 'CHECK_NATIVE_HOST_STATUS':
+    case 'check_native_host_status':
+      void checkNativeHostStatus()
+        .then((status) =>
+          // Official shape: { status: { nativeHostInstalled, mcpConnected } }
+          sendResponse({
+            ok: true,
+            status: {
+              nativeHostInstalled: status.nativeHostInstalled,
+              mcpConnected: status.mcpConnected,
+              hostName: status.hostName,
+              hostLabel: status.hostLabel,
+            },
+          }),
+        )
+        .catch((e: unknown) =>
+          sendResponse({
+            ok: false,
+            error: e instanceof Error ? e.message : String(e),
+          }),
+        );
+      return true;
+
+    case 'RECONNECT_NATIVE_HOST':
+    case 'reconnect_native_host':
+      // Full reset + probe (Options button / clau.de reconnect equivalent).
+      void reconnectNativeHost()
+        .then((connected) => {
+          const snap = getNativeHostStatusSnapshot();
+          sendResponse({
+            ok: true,
+            connected,
+            status: {
+              nativeHostInstalled: snap.nativeHostInstalled,
+              mcpConnected: snap.mcpConnected,
+              hostName: snap.hostName,
+              hostLabel: snap.hostLabel,
+            },
+          });
+        })
+        .catch((e: unknown) =>
+          sendResponse({
+            ok: false,
+            error: e instanceof Error ? e.message : String(e),
+          }),
+        );
+      return true;
+
+    // Official SEND_MCP_NOTIFICATION — forward JSON-RPC-ish notify to host if live.
+    case 'SEND_MCP_NOTIFICATION': {
+      const method = (msg as { method?: string }).method;
+      const params = (msg as { params?: unknown }).params;
+      void (async () => {
+        try {
+          await tryConnectNativeHost();
+          const ok = postMcpNotification(
+            method || 'notifications/message',
+            params,
+          );
+          sendResponse({
+            success: ok,
+            status: getNativeHostStatusSnapshot(),
+          });
+        } catch {
+          sendResponse({ success: false });
+        }
+      })();
+      return true;
+    }
+
+    // Page "Stop Claude" pill → broadcast so the open sidepanel aborts the turn.
+    case 'STOP_AGENT':
+      void chrome.runtime.sendMessage({ type: 'STOP_AGENT_REQUEST' }).catch(() => {
+        /* no sidepanel listening */
+      });
+      // Also detach debugger so the banner clears immediately.
+      void detachAll();
+      sendResponse({ ok: true });
+      return false;
+
+    // Static group indicator heartbeat — alive while a sidepanel port is open.
+    case 'STATIC_INDICATOR_HEARTBEAT':
+      sendResponse({ success: sidepanelPorts > 0 });
+      return false;
+
+    case 'SWITCH_TO_MAIN_TAB':
+    case 'DISMISS_STATIC_INDICATOR_FOR_GROUP':
+      // Handled lightly; full group meta lives in sidepanel storage.
+      sendResponse({ ok: true });
+      return false;
+
     // Teach Claude: sidepanel owns recording; SW just ignores these.
     case 'ELEMENT_SELECTION':
     case 'KEYSTROKE_UPDATE':
@@ -153,6 +266,7 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
       return false;
 
     default:
+      void sender;
       return false;
   }
 });
@@ -195,3 +309,5 @@ watchSettings();
 void loadSettings();
 void reclaimStaleSessions();
 void resyncAllAlarms();
+// Open MCP: connectNative to Desktop / Claude Code hosts when present.
+installNativeHost();

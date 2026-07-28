@@ -4,8 +4,8 @@
  * 两种官方布局（`assets/sidepanel-CEYFzMrx.js`）：
  *
  * 1. **CZ** — 站点动作授权（read/click/type/navigate/…）
- *    根 bg-bg-000 rounded-[14px]；盾牌 + "New permissions required"；
- *    wants-to + host；Allow / Decline / Always allow…
+ *    根 bg-bg-000 rounded-[14px]；ks 举手盾 + "New permissions required"；
+ *    wants-to + host；CLICK 用 ZC 缩放预览；Allow / Decline / Always allow…
  *
  * 2. **eS** — `update_plan` / PLAN_APPROVAL（截图里的「Claude's plan」）
  *    根同 rounded-[14px]；ListChecks + "Claude’s plan"；
@@ -275,14 +275,17 @@ export function PermissionBubble({
   // ── Official CZ site-permission card ────────────────────────────────
   const isType = request.permission === PERMISSION.TYPE;
   const isClick = request.permission === PERMISSION.CLICK;
-  const typeText =
-    isType && request.actionLabel && request.actionLabel !== request.host
-      ? request.actionLabel
-      : null;
+  const typeText = isType ? readTypeText(request) : null;
+  const clickCoord = isClick ? readCoordinate(request.actionData) : null;
+  const clickViewport = isClick ? readViewport(request.actionData) : null;
+  // Official MZ: screenshot lives on actionData.screenshot (not top-level).
+  // We still accept request.screenshot for older emitters.
+  const shotUrl = readScreenshot(request);
 
   return (
     <div className="bg-bg-000 rounded-[14px]">
       <div className="flex items-center gap-2 py-[10px] px-4">
+        {/* Official CZ header icon is ks (raised hand path), exported as ShieldIcon */}
         <ShieldIcon size={20} className="text-text-100" />
         <h3 className="font-base text-text-100">{t.newPermissionsRequired}</h3>
       </div>
@@ -301,6 +304,18 @@ export function PermissionBubble({
           ) : null}
         </div>
 
+        {/* Official CZ: e===CLICK && screenshot && coordinate → ZC({ className: "mx-auto" }) */}
+        {isClick && shotUrl && clickCoord ? (
+          <div>
+            <ClickZoomPreview
+              screenshot={shotUrl}
+              coordinates={clickCoord}
+              viewportDimensions={clickViewport}
+              className="mx-auto"
+            />
+          </div>
+        ) : null}
+
         {isType && typeText ? (
           <div>
             <p className="font-base-bold text-text-100 mb-2">{t.textToBeTyped}</p>
@@ -315,24 +330,211 @@ export function PermissionBubble({
             </div>
           </div>
         ) : null}
-
-        {request.screenshot ? (
-          <div>
-            <img
-              src={request.screenshot}
-              alt="Preview of the page area this action targets"
-              className={cn(
-                'mx-auto rounded-lg border-[0.5px] border-border-300',
-                isClick && 'max-w-full',
-              )}
-            />
-          </div>
-        ) : null}
       </div>
 
       <Choices canAlways={canAlways} active={active} onPick={commit} />
     </div>
   );
+}
+
+/**
+ * Official ZC (sidepanel-CEYFzMrx.js) — 1:1 port:
+ *   - outer: relative overflow-hidden + className
+ *   - scale 1 → zoomLevel (default 2.5) after 300ms, transform 0.6s ease-out
+ *   - transformOrigin clamped so zoom stays inside the box
+ *   - no click marker, no border, no forced aspect-ratio
+ */
+function ClickZoomPreview({
+  screenshot,
+  coordinates,
+  viewportDimensions,
+  className = '',
+  zoomLevel = 2.5,
+}: {
+  screenshot: string;
+  coordinates: [number, number];
+  viewportDimensions?: { width: number; height: number } | null;
+  className?: string;
+  zoomLevel?: number;
+}) {
+  const imgRef = useRef<HTMLImageElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+  const [origin, setOrigin] = useState({ x: 50, y: 50 });
+
+  useEffect(() => {
+    const recompute = () => {
+      const img = imgRef.current;
+      const box = boxRef.current;
+      if (!img || !box) return;
+
+      const cssW = viewportDimensions?.width || img.naturalWidth;
+      const cssH = viewportDimensions?.height || img.naturalHeight;
+      if (!cssW || !cssH || !img.naturalWidth || !img.naturalHeight) return;
+
+      const sx = img.naturalWidth / cssW;
+      const sy = img.naturalHeight / cssH;
+      const cx = coordinates[0] * sx;
+      const cy = coordinates[1] * sy;
+
+      const bw = box.offsetWidth;
+      const bh = box.offsetHeight;
+      if (bw <= 0 || bh <= 0) return;
+
+      const fit = Math.min(bw / img.naturalWidth, bh / img.naturalHeight);
+      const drawnW = img.naturalWidth * fit;
+      const drawnH = img.naturalHeight * fit;
+      const ox = (bw - drawnW) / 2;
+      const oy = (bh - drawnH) / 2;
+      const px = cx * fit + ox;
+      const py = cy * fit + oy;
+
+      // Official clamp so scaled content still covers the viewport box.
+      const a = zoomLevel;
+      if (a <= 1) {
+        setOrigin({ x: (px / bw) * 100, y: (py / bh) * 100 });
+        return;
+      }
+      const minXEdge = (ox * a) / (a - 1);
+      const maxXEdge = ((ox + drawnW) * a - bw) / (a - 1);
+      const minYEdge = (oy * a) / (a - 1);
+      const maxYEdge = ((oy + drawnH) * a - bh) / (a - 1);
+      const minXPt = (px * a - bw) / (a - 1);
+      const maxXPt = (px * a) / (a - 1);
+      const minYPt = (py * a - bh) / (a - 1);
+      const maxYPt = (py * a) / (a - 1);
+      const loX = Math.max(minXEdge, minXPt);
+      const hiX = Math.min(maxXEdge, maxXPt);
+      const loY = Math.max(minYEdge, minYPt);
+      const hiY = Math.min(maxYEdge, maxYPt);
+
+      let rx = px;
+      let ry = py;
+      if (loX <= hiX) rx = Math.max(loX, Math.min(hiX, px));
+      if (loY <= hiY) ry = Math.max(loY, Math.min(hiY, py));
+
+      setOrigin({ x: (rx / bw) * 100, y: (ry / bh) * 100 });
+    };
+
+    const img = imgRef.current;
+    if (img && !img.complete) {
+      img.addEventListener('load', recompute);
+      window.addEventListener('resize', recompute);
+      return () => {
+        img.removeEventListener('load', recompute);
+        window.removeEventListener('resize', recompute);
+      };
+    }
+    recompute();
+    window.addEventListener('resize', recompute);
+    return () => window.removeEventListener('resize', recompute);
+  }, [
+    screenshot,
+    coordinates,
+    viewportDimensions,
+    zoomLevel,
+    coordinates[0],
+    coordinates[1],
+  ]);
+
+  useEffect(() => {
+    setScale(1);
+    const t = window.setTimeout(() => setScale(zoomLevel), 300);
+    return () => window.clearTimeout(t);
+  }, [screenshot, zoomLevel]);
+
+  return (
+    // Official: `relative overflow-hidden ${className}` with className "mx-auto".
+    // Use block img (w-full h-auto) so the card gets intrinsic height — official
+    // h-full only works when a parent already has a definite height.
+    <div ref={boxRef} className={`relative overflow-hidden ${className}`}>
+      <div
+        className="w-full"
+        style={{
+          transform: `scale(${scale})`,
+          transformOrigin: `${origin.x}% ${origin.y}%`,
+          transition: 'transform 0.6s ease-out',
+        }}
+      >
+        <img
+          ref={imgRef}
+          src={screenshot}
+          alt="Screenshot with click location"
+          className="w-full h-auto block"
+          style={{ objectFit: 'contain' }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function readScreenshot(request: PermissionItem['request']): string | null {
+  if (typeof request.screenshot === 'string' && request.screenshot.length > 0) {
+    return request.screenshot;
+  }
+  const data = request.actionData as { screenshot?: unknown } | null;
+  if (data && typeof data.screenshot === 'string' && data.screenshot.length > 0) {
+    return data.screenshot;
+  }
+  return null;
+}
+
+function readCoordinate(actionData: unknown): [number, number] | null {
+  if (!actionData || typeof actionData !== 'object') return null;
+  const o = actionData as {
+    coordinate?: unknown;
+    coordinates?: unknown;
+  };
+  const raw = o.coordinate ?? o.coordinates;
+  if (!Array.isArray(raw) || raw.length < 2) return null;
+  const x = Number(raw[0]);
+  const y = Number(raw[1]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return [x, y];
+}
+
+function readViewport(
+  actionData: unknown,
+): { width: number; height: number } | null {
+  if (!actionData || typeof actionData !== 'object') return null;
+  const o = actionData as {
+    viewport?: { width?: unknown; height?: unknown };
+    viewportDimensions?: { width?: unknown; height?: unknown };
+    imageWidth?: unknown;
+    imageHeight?: unknown;
+  };
+  const v = o.viewport ?? o.viewportDimensions;
+  if (v) {
+    const w = Number(v.width);
+    const h = Number(v.height);
+    if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+      return { width: w, height: h };
+    }
+  }
+  const w = Number(o.imageWidth);
+  const h = Number(o.imageHeight);
+  if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+    return { width: w, height: h };
+  }
+  return null;
+}
+
+function readTypeText(request: PermissionItem['request']): string | null {
+  const data = request.actionData as { text?: unknown } | null;
+  if (data && typeof data.text === 'string' && data.text.length > 0) {
+    return data.text;
+  }
+  if (
+    request.actionLabel &&
+    request.actionLabel !== request.host &&
+    !/^type$/i.test(request.actionLabel)
+  ) {
+    // describeAction often returns "Type "hello"" — strip prefix quotes if present
+    const m = /^Type\s+["“]([\s\S]*)["”]$/i.exec(request.actionLabel.trim());
+    if (m) return m[1] ?? request.actionLabel;
+    return request.actionLabel;
+  }
+  return null;
 }
 
 /**
@@ -357,11 +559,17 @@ export function PermissionStickyShell({
     <div
       ref={promptRef}
       className={cn(
+        // Official: absolute bottom-0 left-0 right-0 z-[10] (+ pr-2 when overflow)
         'absolute bottom-0 left-0 right-0 z-[10]',
         scrollerOverflow && 'pr-2',
       )}
     >
       <div className="mx-auto max-w-3xl md:px-2">
+        {/*
+          Official shell class string exact (no overflow-hidden):
+            mx-3 md:mx-0 border border-border-300 rounded-[14px]
+            shadow-[0_4px_20px_0_rgba(0,0,0,0.04)] bg-bg-100
+        */}
         <div className="mx-3 md:mx-0 border border-border-300 rounded-[14px] shadow-[0_4px_20px_0_rgba(0,0,0,0.04)] bg-bg-100">
           {children}
         </div>

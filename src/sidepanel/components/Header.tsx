@@ -359,7 +359,20 @@ function Menu({
                       role="menuitemradio"
                       aria-checked={selected}
                       onClick={() => {
-                        if (opt.id !== locale) onSelectLocale(opt.id);
+                        if (opt.id === locale) {
+                          setOpen(false);
+                          setLangOpen(false);
+                          return;
+                        }
+                        // Official FZ: changing language starts a new chat when
+                        // the transcript is non-empty — confirm first.
+                        if (hasMessages) {
+                          const ok = window.confirm(
+                            `${t.languageChangeConfirmTitle}\n\n${t.languageChangeConfirm}`,
+                          );
+                          if (!ok) return;
+                        }
+                        onSelectLocale(opt.id);
                         setOpen(false);
                         setLangOpen(false);
                       }}

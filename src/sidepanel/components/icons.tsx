@@ -187,6 +187,33 @@ export const CloseIcon = fillIcon(
 
 export const X = CloseIcon;
 
+/**
+ * Official Ms (bell) — notification banner action icon.
+ * Path from sidepanel-CEYFzMrx.js `Ms=e=>…`.
+ */
+export const BellIcon = fillIcon(
+  'M10 3a5 5 0 0 1 5 5v1.815c0 .721.47 1.424 1.146 1.968l.165.138C17.139 12.638 18 13.799 18 15.5a.5.5 0 0 1-.5.5h-5.05a2.501 2.501 0 0 1-4.9 0H2.5a.5.5 0 0 1-.5-.5c0-1.814.982-3.014 1.854-3.717l.243-.21c.543-.51.903-1.127.903-1.758V8a5 5 0 0 1 5-5M8.587 16a1.5 1.5 0 0 0 2.826 0zM10 4a4 4 0 0 0-4 4v1.815c0 1.011-.562 1.872-1.229 2.495l-.29.252c-.641.516-1.297 1.303-1.449 2.438h13.936c-.13-.973-.631-1.69-1.175-2.2l-.273-.239c-.785-.632-1.52-1.59-1.52-2.746V8a4 4 0 0 0-4-4',
+  'BellIcon',
+);
+
+/** Official Es — play / resume in Teach Claude toolbar. */
+export const PlayIcon = fillIcon(
+  'M6 5.343c0-1.19 1.32-1.907 2.317-1.258l7.166 4.657.16.12a1.5 1.5 0 0 1-.16 2.396l-7.166 4.657C7.32 16.563 6 15.847 6 14.657zm1.772-.42a.5.5 0 0 0-.772.42v9.314a.5.5 0 0 0 .772.419l7.166-4.657a.5.5 0 0 0 .053-.8l-.053-.038z',
+  'PlayIcon',
+);
+
+/** Pause bars (Teach Claude toolbar). */
+export const PauseIcon = fillIcon(
+  'M6.5 4a.5.5 0 0 1 .5.5v11a.5.5 0 0 1-1 0v-11a.5.5 0 0 1 .5-.5m7 0a.5.5 0 0 1 .5.5v11a.5.5 0 0 1-1 0v-11a.5.5 0 0 1 .5-.5',
+  'PauseIcon',
+);
+
+/** Mic for voice narration toggle (Teach Claude). */
+export const MicIcon = fillIcon(
+  'M10 2.5A2.5 2.5 0 0 1 12.5 5v5a2.5 2.5 0 0 1-5 0V5A2.5 2.5 0 0 1 10 2.5m0 1A1.5 1.5 0 0 0 8.5 5v5a1.5 1.5 0 0 0 3 0V5A1.5 1.5 0 0 0 10 3.5m-4.5 6a.5.5 0 0 1 .5.5 4 4 0 0 0 8 0 .5.5 0 0 1 1 0 5 5 0 0 1-4.5 4.975V17.5h2a.5.5 0 0 1 0 1h-5a.5.5 0 0 1 0-1h2v-2.025A5 5 0 0 1 5 10a.5.5 0 0 1 .5-.5',
+  'MicIcon',
+);
+
 export const AlertIcon = fillIcon(
   'M10 2.5a7.5 7.5 0 1 1 0 15 7.5 7.5 0 0 1 0-15m0 1a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13m.1 5.51a.5.5 0 0 1 .4.49v3h1a.5.5 0 0 1 0 1h-3a.5.5 0 0 1 0-1h1V10h-1a.5.5 0 0 1 0-1H10zM10 6.5A.75.75 0 1 1 10 8a.75.75 0 0 1 0-1.5',
   'AlertIcon',

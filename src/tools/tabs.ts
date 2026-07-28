@@ -23,6 +23,17 @@ import { isOperableUrl } from '@/permissions/manager';
  * 表现为 read_page / get_page_text「Cannot reach the page script」。
  */
 const A11Y_SCRIPT_SRC = 'src/content/accessibilityTree.ts';
+const INDICATOR_SCRIPT_SRC = 'src/content/agentIndicator.ts';
+
+/** Prefer hashed dist assets over raw src paths when both appear in manifest. */
+function preferHashedAssets(paths: string[]): string[] {
+  const uniq = [...new Set(paths)];
+  uniq.sort((a, b) => {
+    const score = (p: string) => (p.startsWith('assets/') ? 0 : 1);
+    return score(a) - score(b);
+  });
+  return uniq;
+}
 
 /** 解析已打包的 a11y content script 路径（相对扩展根）。 */
 function resolveA11yScriptFiles(): string[] {
@@ -40,18 +51,33 @@ function resolveA11yScriptFiles(): string[] {
         }
       }
     }
-    if (fromManifest.length > 0) {
-      // Prefer hashed asset over raw src path when both appear.
-      fromManifest.sort((a, b) => {
-        const score = (p: string) => (p.startsWith('assets/') ? 0 : 1);
-        return score(a) - score(b);
-      });
-      return [...new Set(fromManifest)];
-    }
+    if (fromManifest.length > 0) return preferHashedAssets(fromManifest);
   } catch {
     /* ignore */
   }
   return [A11Y_SCRIPT_SRC];
+}
+
+/** 解析 agent 视觉指示器 content script 路径。 */
+function resolveIndicatorScriptFiles(): string[] {
+  try {
+    const manifest = chrome.runtime.getManifest();
+    const fromManifest: string[] = [];
+    for (const cs of manifest.content_scripts ?? []) {
+      for (const js of cs.js ?? []) {
+        if (
+          /agentIndicator|agent-indicator|agent_indicator|agent-visual/i.test(js) ||
+          js.includes(INDICATOR_SCRIPT_SRC)
+        ) {
+          fromManifest.push(js);
+        }
+      }
+    }
+    if (fromManifest.length > 0) return preferHashedAssets(fromManifest);
+  } catch {
+    /* ignore */
+  }
+  return [INDICATOR_SCRIPT_SRC];
 }
 
 /**
@@ -358,47 +384,139 @@ export async function pingPage(tabId: number): Promise<boolean> {
   }
 }
 
-// ───────────────────── agent 指示器 ─────────────────────
+// ───────────────────── agent 指示器（官方 agent-visual-indicator） ─────────────────────
+
+/** Tabs that currently show the pulsing agent chrome (glow + phantom cursor + Stop). */
+const agentIndicatorTabs = new Set<number>();
 
 /**
- * 显示/隐藏"agent 正在操作"指示器。
- *
- * 发送失败**必须静默** —— 指示器只是提示，页面不支持（比如 chrome://）
- * 不该让整个工具调用失败。
+ * 补注入 agent indicator（装扩展后未刷新的旧 tab / SPA document 重置后）。
+ * 与 injectA11yScript 对称；指示器只需要 top frame。
  */
-export async function showIndicator(tabId: number, label?: string): Promise<void> {
+async function injectIndicatorScript(tabId: number): Promise<boolean> {
   try {
-    await chrome.tabs.sendMessage(tabId, { type: 'AGENT_INDICATOR_SHOW', label }, { frameId: 0 });
+    const tab = await chrome.tabs.get(tabId);
+    const url = tab.url ?? tab.pendingUrl ?? '';
+    if (url && !isOperableUrl(url)) return false;
   } catch {
-    /* 忽略 */
+    return false;
   }
+
+  for (const file of resolveIndicatorScriptFiles()) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [0] },
+        files: [file],
+      });
+      // Verify listener is up (same race as a11y inject).
+      await delay(40);
+      try {
+        const ping = await chrome.tabs.sendMessage<{ type: string }, { ok?: boolean }>(
+          tabId,
+          { type: 'AGENT_INDICATOR_PING' },
+          { frameId: 0 },
+        );
+        if (ping?.ok) return true;
+      } catch {
+        // Inject reported success; listener may still be registering.
+        return true;
+      }
+      return true;
+    } catch {
+      /* try next path */
+    }
+  }
+  return false;
 }
 
-export async function hideIndicator(tabId: number): Promise<void> {
+async function sendIndicator(
+  tabId: number,
+  msg: Record<string, unknown>,
+  { retryInject = false }: { retryInject?: boolean } = {},
+): Promise<void> {
   try {
-    await chrome.tabs.sendMessage(tabId, { type: 'AGENT_INDICATOR_HIDE' }, { frameId: 0 });
+    await chrome.tabs.sendMessage(tabId, msg, { frameId: 0 });
   } catch {
-    /* 忽略 */
+    if (!retryInject) return;
+    const ok = await injectIndicatorScript(tabId);
+    if (!ok) return;
+    await delay(50);
+    try {
+      await chrome.tabs.sendMessage(tabId, msg, { frameId: 0 });
+    } catch {
+      /* chrome:// / still no CS — indicator is best-effort */
+    }
   }
 }
 
 /**
- * 截图前临时隐藏指示器。
+ * Show official agent chrome for the whole turn (not per-action).
+ * Safe to call repeatedly — content script is idempotent.
+ * Retries inject when the tab was open before the extension loaded.
  *
- * 不这么做的话，模型每张截图上都会看到我们自己画的边框和胶囊，
- * 时间长了它会开始"解读"这个 UI，甚至试图点它。
+ * `isMcp: true` (official SHOW_AGENT_INDICATORS.isMcp) suppresses the Stop
+ * Claude pill — Desktop/Claude Code own the stop control.
+ */
+export async function showIndicator(
+  tabId: number,
+  _label?: string,
+  opts?: { isMcp?: boolean },
+): Promise<void> {
+  agentIndicatorTabs.add(tabId);
+  await sendIndicator(
+    tabId,
+    { type: 'SHOW_AGENT_INDICATORS', isMcp: opts?.isMcp === true },
+    { retryInject: true },
+  );
+}
+
+/** Tear down agent chrome (turn end / stop / clear). */
+export async function hideIndicator(tabId: number): Promise<void> {
+  agentIndicatorTabs.delete(tabId);
+  await sendIndicator(tabId, { type: 'HIDE_AGENT_INDICATORS' });
+}
+
+/** Hide chrome on every tab that still has it (stop / reset). */
+export async function hideAllIndicators(): Promise<void> {
+  const ids = [...agentIndicatorTabs];
+  agentIndicatorTabs.clear();
+  await Promise.all(ids.map((id) => sendIndicator(id, { type: 'HIDE_AGENT_INDICATORS' })));
+}
+
+/**
+ * Official UPDATE_PHANTOM_CURSOR — slide the orange cursor to (x, y) CSS coords
+ * and wait for the ~180ms transition so the user sees the move before the click.
+ */
+export async function updatePhantomCursor(
+  tabId: number,
+  x: number,
+  y: number,
+): Promise<void> {
+  // Soft retry: first mouse move after showIndicator may still race inject.
+  await sendIndicator(
+    tabId,
+    { type: 'UPDATE_PHANTOM_CURSOR', x, y },
+    { retryInject: true },
+  );
+}
+
+/**
+ * Official HIDE_FOR_TOOL_USE — tuck chrome away for a clean screenshot, then
+ * SHOW_AFTER_TOOL_USE so the glow/cursor come back without restarting the turn.
  */
 export async function withIndicatorHidden<T>(
   tabId: number,
   fn: () => Promise<T>,
 ): Promise<T> {
-  await hideIndicator(tabId);
-  // 给 CSS 过渡一点时间，否则截图里还是半透明的残影
-  await delay(60);
+  await sendIndicator(tabId, { type: 'HIDE_FOR_TOOL_USE' });
+  // Let opacity/display settle so the capture has no residual chrome.
+  await delay(80);
   try {
     return await fn();
   } finally {
-    /* 由调用方决定要不要再显示；这里不自动恢复，避免和后续动作打架 */
+    if (agentIndicatorTabs.has(tabId)) {
+      await sendIndicator(tabId, { type: 'SHOW_AFTER_TOOL_USE' });
+    }
   }
 }
 

@@ -149,17 +149,12 @@ export async function captureVisible(
     });
     const m = /^data:(image\/\w+);base64,(.+)$/.exec(dataUrl);
     if (!m) return null;
-    const mediaType = (m[1] === 'image/png' ? 'image/png' : 'image/jpeg') as
-      | 'image/png'
-      | 'image/jpeg';
-    let data = m[2]!;
 
-    // Best-effort CSS size from tab — model coords ≈ CSS when scale≈1 on typical panels.
+    // CSS viewport — coordinate space for CDP Input / phantom cursor.
     let cssWidth = 1280;
     let cssHeight = 720;
     let dpr = 1;
     try {
-      // Prefer real viewport via a light script injection (no debugger).
       const [{ result }] = await chrome.scripting.executeScript({
         target: { tabId },
         func: () => ({
@@ -178,77 +173,84 @@ export async function captureVisible(
       /* restricted page — keep defaults */
     }
 
-    // Downscale in canvas if over API budget.
-    let imageWidth = cssWidth;
-    let imageHeight = cssHeight;
-    let scale = Math.min(TARGET_MAX_WIDTH / cssWidth, TARGET_MAX_HEIGHT / cssHeight, 1);
-    let quality = 0.85;
-    let note: string | undefined;
-
-    if (data.length > MAX_BASE64_CHARS || scale < 1) {
-      const resized = await downscaleDataUrl(dataUrl, scale, quality);
-      if (resized) {
-        data = resized.data;
-        imageWidth = resized.width;
-        imageHeight = resized.height;
-        scale = resized.width / cssWidth;
-        quality = resized.quality;
-        if (data.length > MAX_BASE64_CHARS) {
-          note =
-            'Screenshot was heavily downscaled to fit size limits. ' +
-            'Zoom into a smaller region if you need to read fine detail.';
-        }
-      }
-    } else {
-      imageWidth = Math.round(cssWidth * scale);
-      imageHeight = Math.round(cssHeight * scale);
-    }
+    // Always decode the real bitmap. captureVisibleTab returns *device* pixels
+    // (CSS × DPR). Older code claimed imageWidth=cssWidth while shipping the
+    // full-DPR JPEG → model/image-space coords and click markers were ~2× off
+    // on Retina, and thumbs/lightbox markers drifted from the real click.
+    const fitted = await fitCaptureToModel(dataUrl, cssWidth, cssHeight);
+    if (!fitted) return null;
 
     contexts.set(tabId, {
       cssWidth,
       cssHeight,
-      imageWidth,
-      imageHeight,
-      scale: imageWidth / cssWidth,
+      imageWidth: fitted.width,
+      imageHeight: fitted.height,
+      scale: fitted.width / cssWidth,
       devicePixelRatio: dpr,
       capturedAt: Date.now(),
     });
 
     return {
-      data,
-      mediaType,
-      width: imageWidth,
-      height: imageHeight,
-      quality,
-      truncatedNote: note,
+      data: fitted.data,
+      mediaType: 'image/jpeg',
+      width: fitted.width,
+      height: fitted.height,
+      quality: fitted.quality,
+      truncatedNote: fitted.note,
     };
   } catch {
     return null;
   }
 }
 
-async function downscaleDataUrl(
+/**
+ * Decode capture → resize to TARGET_MAX_* / API budget → raw base64.
+ * Final width/height are the pixels the model (and our thumbs) actually see.
+ */
+async function fitCaptureToModel(
   dataUrl: string,
-  scale: number,
-  quality: number,
-): Promise<{ data: string; width: number; height: number; quality: number } | null> {
+  cssWidth: number,
+  cssHeight: number,
+): Promise<{
+  data: string;
+  width: number;
+  height: number;
+  quality: number;
+  note?: string;
+} | null> {
   try {
-    // OffscreenCanvas / createImageBitmap work in extension pages.
     const blob = await (await fetch(dataUrl)).blob();
     const bitmap = await createImageBitmap(blob);
-    let w = Math.max(1, Math.round(bitmap.width * Math.min(scale, 1)));
-    let h = Math.max(1, Math.round(bitmap.height * Math.min(scale, 1)));
-    // Also cap by TARGET in device pixels of the source image.
+    const naturalW = bitmap.width;
+    const naturalH = bitmap.height;
+
+    // Cap by model target; never upscale past natural.
+    let w = naturalW;
+    let h = naturalH;
     const cap = Math.min(TARGET_MAX_WIDTH / w, TARGET_MAX_HEIGHT / h, 1);
     w = Math.max(1, Math.round(w * cap));
     h = Math.max(1, Math.round(h * cap));
 
-    let q = quality;
-    for (const step of [q, ...QUALITY_LADDER]) {
-      q = step;
+    // Prefer keeping aspect locked to CSS viewport when natural is near CSS×DPR.
+    // (Avoids 1px drift from capture chrome.)
+    if (cssWidth > 0 && cssHeight > 0) {
+      const aspect = cssWidth / cssHeight;
+      const imgAspect = w / h;
+      if (Math.abs(aspect - imgAspect) < 0.08) {
+        // Keep w, recompute h from CSS aspect for stable scale.
+        h = Math.max(1, Math.round(w / aspect));
+      }
+    }
+
+    let q = 0.85;
+    let note: string | undefined;
+    for (let attempt = 0; attempt < 8; attempt++) {
       const canvas = new OffscreenCanvas(w, h);
       const ctx = canvas.getContext('2d');
-      if (!ctx) return null;
+      if (!ctx) {
+        bitmap.close();
+        return null;
+      }
       ctx.drawImage(bitmap, 0, 0, w, h);
       const out = await canvas.convertToBlob({ type: 'image/jpeg', quality: q });
       const buf = await out.arrayBuffer();
@@ -260,11 +262,22 @@ async function downscaleDataUrl(
       const b64 = btoa(binary);
       if (b64.length <= MAX_BASE64_CHARS) {
         bitmap.close();
-        return { data: b64, width: w, height: h, quality: q };
+        if (w < naturalW * 0.5 || h < naturalH * 0.5) {
+          note =
+            'Screenshot was heavily downscaled to fit size limits. ' +
+            'Zoom into a smaller region if you need to read fine detail.';
+        }
+        return { data: b64, width: w, height: h, quality: q, note };
       }
-      // shrink further
-      w = Math.max(1, Math.round(w * 0.75));
-      h = Math.max(1, Math.round(h * 0.75));
+      // Shrink further: quality ladder then pixel ladder.
+      const nextQ = QUALITY_LADDER[Math.min(attempt, QUALITY_LADDER.length - 1)]!;
+      if (nextQ < q - 0.01) {
+        q = nextQ;
+      } else {
+        w = Math.max(1, Math.round(w * 0.75));
+        h = Math.max(1, Math.round(h * 0.75));
+        q = Math.min(q, 0.6);
+      }
     }
     bitmap.close();
     return null;

@@ -47,7 +47,10 @@ const TABLE: Record<string, ToolDisplay> = {
   tabs_context: { Icon: SquareDashed, label: 'Get tabs' },
   tabs_create: { Icon: ExternalLink, label: 'Create new tab' },
   tabs_close: { Icon: X, label: 'Close tab' },
-  tabs_close_id: { Icon: X, label: 'Close tab' },
+  // MCP tab tools (open Desktop / Claude Code bridge)
+  tabs_context_mcp: { Icon: SquareDashed, label: 'Get MCP tabs' },
+  tabs_create_mcp: { Icon: ExternalLink, label: 'Create MCP tab' },
+  tabs_close_mcp: { Icon: X, label: 'Close MCP tab' },
   read_console_messages: { Icon: Terminal, label: 'Read console' },
   read_network_requests: { Icon: Network, label: 'Read network requests' },
   javascript_tool: { Icon: Code, label: 'Execute JavaScript' },
@@ -131,6 +134,16 @@ export function describeCall(
       return { ...base, label: t?.toolCreateNewTab ?? 'Create new tab' };
     case 'tabs_context':
       return { ...base, label: t?.toolGetTabs ?? 'Get tabs' };
+    case 'tabs_close':
+      return { ...base, label: t?.toolCloseTab ?? 'Close tab' };
+    case 'tabs_context_mcp':
+      return { ...base, label: t?.toolGetMcpTabs ?? 'Get MCP tabs' };
+    case 'tabs_create_mcp':
+      return { ...base, label: t?.toolCreateMcpTab ?? 'Create MCP tab' };
+    case 'tabs_close_mcp':
+      return { ...base, label: t?.toolCloseMcpTab ?? 'Close MCP tab' };
+    case 'resize_window':
+      return { ...base, label: t?.toolResizeWindow ?? 'Resize window' };
     case 'form_input': {
       const value = args.value ?? args.text;
       if (value != null && String(value).length > 0) {

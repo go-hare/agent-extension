@@ -15,7 +15,7 @@ import {
   uploadImageInput,
   uploadImageSchema,
 } from './schemas';
-import { getEffectiveTabId, getTabUrl, delay } from './tabs';
+import { getEffectiveTabId, getTabUrl, delay, sendToPage } from './tabs';
 import type { Tool } from './registry';
 
 function parser<T extends z.ZodTypeAny>(schema: T, name: string) {
@@ -36,23 +36,44 @@ function approxBytes(b64: string): number {
 type DeliverResult = { ok: true; detail: string } | { ok: false; error: string };
 
 /**
- * 在页面 MAIN world 把 files 交给 ref 元素或坐标处的 drop 目标。
- * ref 解析使用与 a11y 相同的 __agentElementMap。
+ * 把 files 交给 ref 元素或坐标处的 drop 目标。
+ *
+ * - **ref 路径**：走 isolated-world content script（`AGENT_DELIVER_FILES`），
+ *   才能看到 read_page 建的 `__agentElementMap`。MAIN-world executeScript 看不到。
+ * - **coordinate 路径**：仍用 MAIN world 的 elementFromPoint（与页面命中测试一致）。
  */
 async function deliverFiles(
   tabId: number,
   files: Array<{ data: string; name: string; mimeType: string }>,
   target: { ref?: string; coordinate?: [number, number] },
 ): Promise<DeliverResult> {
+  if (target.ref) {
+    try {
+      const r = await sendToPage<{ ok: boolean; error?: string; detail?: string }>(tabId, {
+        type: 'AGENT_DELIVER_FILES',
+        refId: target.ref,
+        files,
+      });
+      if (!r) return { ok: false, error: 'Page script returned nothing while delivering files.' };
+      if (!r.ok) return { ok: false, error: r.error ?? 'Could not deliver files.' };
+      return { ok: true, detail: r.detail ?? 'Delivered files.' };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  if (!target.coordinate) {
+    return { ok: false, error: 'Missing ref or coordinate.' };
+  }
+
   try {
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId, frameIds: [0] },
       world: 'MAIN',
-      args: [files, target.ref ?? null, target.coordinate ?? null],
+      args: [files, target.coordinate],
       func: (
         filePayloads: Array<{ data: string; name: string; mimeType: string }>,
-        refId: string | null,
-        coordinate: [number, number] | null,
+        coordinate: [number, number],
       ) => {
         function b64ToUint8(b64: string): Uint8Array {
           const bin = atob(b64);
@@ -71,39 +92,23 @@ async function deliverFiles(
           dt.items.add(new File([blob], f.name, { type: f.mimeType || 'application/octet-stream' }));
         }
 
-        let el: Element | null = null;
-        if (refId) {
-          const map = (window as unknown as { __agentElementMap?: Record<string, WeakRef<Element>> })
-            .__agentElementMap;
-          const wr = map?.[refId];
-          el = wr?.deref() ?? null;
-          if (!el) {
-            return {
-              ok: false,
-              error: `Element ${refId} no longer exists. Call read_page or find again.`,
-            };
-          }
-        } else if (coordinate) {
-          const [x, y] = coordinate;
-          el = document.elementFromPoint(x, y);
-          if (!el) {
-            return { ok: false, error: `No element at coordinate [${x}, ${y}].` };
-          }
-          // 点到 iframe 时尝试深入（同域）
-          if (el instanceof HTMLIFrameElement) {
-            try {
-              const rect = el.getBoundingClientRect();
-              const doc = el.contentDocument;
-              if (doc) {
-                const inner = doc.elementFromPoint(x - rect.left, y - rect.top);
-                if (inner) el = inner;
-              }
-            } catch {
-              /* cross-origin */
+        const [x, y] = coordinate;
+        let el: Element | null = document.elementFromPoint(x, y);
+        if (!el) {
+          return { ok: false, error: `No element at coordinate [${x}, ${y}].` };
+        }
+        // 点到 iframe 时尝试深入（同域）
+        if (el instanceof HTMLIFrameElement) {
+          try {
+            const rect = el.getBoundingClientRect();
+            const doc = el.contentDocument;
+            if (doc) {
+              const inner = doc.elementFromPoint(x - rect.left, y - rect.top);
+              if (inner) el = inner;
             }
+          } catch {
+            /* cross-origin */
           }
-        } else {
-          return { ok: false, error: 'Missing ref or coordinate.' };
         }
 
         try {
@@ -131,19 +136,16 @@ async function deliverFiles(
           input.dispatchEvent(new Event('change', { bubbles: true }));
           return {
             ok: true,
-            detail: `Set ${dt.files.length} file(s) on <input type="file"> (${refId ?? 'coordinate'}).`,
+            detail: `Set ${dt.files.length} file(s) on <input type="file"> (coordinate).`,
           };
         }
 
         // Drag & drop path
-        const rect = el.getBoundingClientRect();
-        const cx = coordinate ? coordinate[0] : rect.left + rect.width / 2;
-        const cy = coordinate ? coordinate[1] : rect.top + rect.height / 2;
         const common: DragEventInit = {
           bubbles: true,
           cancelable: true,
-          clientX: cx,
-          clientY: cy,
+          clientX: x,
+          clientY: y,
           dataTransfer: dt,
         };
         for (const type of ['dragenter', 'dragover', 'drop'] as const) {
@@ -151,7 +153,7 @@ async function deliverFiles(
         }
         return {
           ok: true,
-          detail: `Dispatched drop with ${dt.files.length} file(s) at (${Math.round(cx)}, ${Math.round(cy)}).`,
+          detail: `Dispatched drop with ${dt.files.length} file(s) at (${Math.round(x)}, ${Math.round(y)}).`,
         };
       },
     });

@@ -1,137 +1,595 @@
 /**
- * "Agent 正在操作此页面" 的视觉指示器。
+ * Official agent-visual-indicator port (Claude in Chrome 1.0.81).
  *
- * 这不是装饰 —— 它是安全设计的一部分：
- * agent 用 CDP 注入的是 **isTrusted=true 的真实输入事件**，
- * 从页面的角度和真人操作完全无法区分。用户必须能一眼看出
- * 现在动页面的是 AI 不是自己，否则后台标签页里的自动操作
- * 会变成"我什么时候点的这个按钮"。
+ * Page chrome while the agent drives the tab:
+ *   - orange inset glow border (pulsing)
+ *   - phantom cursor that slides to each CDP mouse target
+ *   - bottom "Stop Claude" pill
+ *   - secondary-tab static pill (group hand-off)
  *
- * 实现要点：
- *  - Shadow DOM 隔离：页面的 CSS reset 冲不掉我们，我们也污染不到页面。
- *    用 closed 模式并自己留引用 —— 页面脚本拿不到 shadowRoot，
- *    也就没法伪造/隐藏这个指示器。
- *  - pointer-events: none —— 绝不能挡住 agent 自己要点的元素。
- *  - z-index 2147483646（留一格给页面自己的极端值，我们不需要赢到底，
- *    真被盖住时用户至少还能看到边框）。
+ * Messages (official names + our legacy aliases):
+ *   SHOW_AGENT_INDICATORS / HIDE_AGENT_INDICATORS
+ *   UPDATE_PHANTOM_CURSOR { x, y }
+ *   HIDE_FOR_TOOL_USE / SHOW_AFTER_TOOL_USE  (screenshot without chrome)
+ *   SHOW_STATIC_INDICATOR / HIDE_STATIC_INDICATOR
+ *   AGENT_INDICATOR_SHOW / AGENT_INDICATOR_HIDE  (compat)
  */
 
-const HOST_ID = '__agent_activity_indicator__';
+const CURSOR_PATH =
+  'M0 0 L0 18 L4.5 14 L7.5 21.5 L11 20 L8 13 L14 13 Z';
 
-const SHADOW_CSS = `
-  :host { all: initial; }
-  .frame {
-    position: fixed; inset: 0;
-    border: 2px solid hsl(15 63.1% 59.6%);
-    box-shadow: inset 0 0 0 1px hsl(15 63.1% 59.6% / .35);
-    pointer-events: none; opacity: 0;
-    transition: opacity .18s ease-out;
-  }
-  .frame[data-on="1"] { opacity: 1; }
-  .pill {
-    position: fixed; top: 10px; left: 50%;
-    transform: translateX(-50%) translateY(-8px);
-    display: flex; align-items: center; gap: 8px;
-    max-width: min(420px, 80vw); padding: 6px 12px;
-    border-radius: 999px;
-    background: hsl(60 2.6% 7.6% / .92);
-    color: hsl(48 33.3% 97.1%);
-    font: 500 12px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    letter-spacing: .1px;
-    box-shadow: 0 4px 14px hsl(0 0% 0% / .28);
-    opacity: 0; pointer-events: none;
-    transition: opacity .18s ease-out, transform .18s ease-out;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .pill[data-on="1"] { opacity: 1; transform: translateX(-50%) translateY(0); }
-  .dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: hsl(15 63.1% 59.6%); flex: 0 0 auto;
-    animation: agent-pulse 1.4s ease-in-out infinite;
-  }
-  @keyframes agent-pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50%      { opacity: .45; transform: scale(.8); }
-  }
-  @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
-`;
+let glowEl: HTMLElement | null = null;
+let stopEl: HTMLElement | null = null;
+let staticEl: HTMLElement | null = null;
+let cursorEl: HTMLElement | null = null;
+let cursorStyled: SVGSVGElement | null = null;
 
-interface Ui {
-  host: HTMLElement;
-  frame: HTMLElement;
-  pill: HTMLElement;
-  label: HTMLElement;
-}
+let lastX: number | null = null;
+let lastY: number | null = null;
 
-let ui: Ui | null = null;
-let hideTimer: number | undefined;
+/** Agent is actively driving this tab. */
+let agentOn = false;
+/** Secondary-tab static group banner. */
+let staticOn = false;
+/** Hidden only for the duration of a screenshot / tool capture. */
+let hiddenForTool = false;
+let wasAgentBeforeHide = false;
+let wasStaticBeforeHide = false;
 
-function build(): Ui {
-  const host = document.createElement('div');
-  host.id = HOST_ID;
-  host.style.cssText =
-    'position:fixed;inset:0;pointer-events:none;z-index:2147483646;contain:layout style size';
+/** MCP mode skips the Stop pill (official `isMcp`). */
+let isMcp = false;
+/** Static pill dismissed for this group session. */
+let staticDismissed = false;
+let staticHeartbeat: number | null = null;
 
-  const root = host.attachShadow({ mode: 'closed' });
+/** Keep AudioContext warm so browsers don't throttle the tab as hard. */
+let audioCtx: AudioContext | null = null;
 
+function ensureAnimStyles(): void {
+  if (document.getElementById('claude-agent-animation-styles')) return;
   const style = document.createElement('style');
-  style.textContent = SHADOW_CSS;
-
-  const frame = document.createElement('div');
-  frame.className = 'frame';
-
-  const pill = document.createElement('div');
-  pill.className = 'pill';
-  const dot = document.createElement('span');
-  dot.className = 'dot';
-  const label = document.createElement('span');
-  label.textContent = 'Agent is working…';
-  pill.append(dot, label);
-
-  root.append(style, frame, pill);
-  return { host, frame, pill, label };
+  style.id = 'claude-agent-animation-styles';
+  style.textContent = `
+    @keyframes claude-pulse {
+      0%, 100% { opacity: 0.6; }
+      50% { opacity: 1; }
+    }
+    #claude-agent-glow-border-inner {
+      animation: claude-pulse 2s ease-in-out infinite;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #claude-agent-glow-border-inner { animation: none; }
+    }
+  `;
+  document.head.appendChild(style);
 }
 
-function mount(): Ui {
-  // document_idle 注入，但页面可能是 SPA 把整个 documentElement 换掉了
-  if (ui && document.documentElement.contains(ui.host)) return ui;
-  ui = build();
-  document.documentElement.appendChild(ui.host);
-  return ui;
+function buildCursor(x: number, y: number): { container: HTMLElement; styled: SVGSVGElement } {
+  const n = document.createElement('div');
+  n.id = 'claude-phantom-cursor';
+  n.setAttribute('aria-hidden', 'true');
+  n.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    z-index: 2147483646;
+    transform: translate3d(${x}px, ${y}px, 0);
+    transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
+    will-change: transform;
+  `;
+
+  const NS = 'http://www.w3.org/2000/svg';
+  const path = (attrs: Record<string, string>) => {
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', CURSOR_PATH);
+    for (const [k, v] of Object.entries(attrs)) p.setAttribute(k, v);
+    return p;
+  };
+  const svg = (id: string, stroke: string, fill: string, extraCss: string) => {
+    const a = document.createElementNS(NS, 'svg');
+    a.id = id;
+    a.setAttribute('width', '20');
+    a.setAttribute('height', '26');
+    a.setAttribute('viewBox', '0 0 20 26');
+    a.style.cssText = `position:absolute; top:0; left:0; overflow:visible; ${extraCss}`;
+    a.appendChild(
+      path({
+        stroke,
+        'stroke-width': '3',
+        'stroke-linejoin': 'round',
+        fill: stroke,
+      }),
+    );
+    a.appendChild(path({ fill }));
+    return a;
+  };
+
+  const plain = svg('claude-phantom-cursor-plain', 'white', '#111', '');
+  const styled = svg(
+    'claude-phantom-cursor-styled',
+    '#D97757',
+    '#FAF9F5',
+    'filter: drop-shadow(0 0 4px rgba(217,119,87,0.9)) drop-shadow(0 0 10px rgba(217,119,87,0.45));',
+  );
+  n.appendChild(plain);
+  n.appendChild(styled);
+  return { container: n, styled };
 }
 
-function setOn(on: boolean, label?: string): void {
-  const u = mount();
-  if (label) u.label.textContent = label;
-  const v = on ? '1' : '0';
-  u.frame.setAttribute('data-on', v);
-  u.pill.setAttribute('data-on', v);
-}
+/** Move / create phantom cursor. Resolves after the CSS slide finishes. */
+function updatePhantomCursor(x: number, y: number): Promise<void> {
+  const same =
+    cursorEl !== null && x === lastX && y === lastY;
+  lastX = x;
+  lastY = y;
+  if (!agentOn) return Promise.resolve();
 
-function show(label?: string): void {
-  if (hideTimer) {
-    clearTimeout(hideTimer);
-    hideTimer = undefined;
+  if (!cursorEl) {
+    if (document.hidden) return Promise.resolve();
+    const { container, styled } = buildCursor(x, y);
+    cursorEl = container;
+    cursorStyled = styled;
+    document.body.appendChild(cursorEl);
+    lastX = x;
+    lastY = y;
+    return Promise.resolve();
   }
-  setOn(true, label);
+
+  cursorEl.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+  lastX = x;
+  lastY = y;
+  if (same || document.hidden) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      cursorEl?.removeEventListener('transitionend', finish);
+      resolve();
+    };
+    cursorEl!.addEventListener('transitionend', finish, { once: true });
+    setTimeout(finish, 220);
+  });
 }
 
-/**
- * 延迟隐藏 —— 连续的工具调用之间有几十毫秒空隙，
- * 立即隐藏会让指示器疯狂闪烁，比不显示还糟。
- */
-function hide(): void {
-  if (hideTimer) clearTimeout(hideTimer);
-  hideTimer = window.setTimeout(() => {
-    setOn(false);
-    hideTimer = undefined;
-  }, 400);
+function removeCursor(): void {
+  if (cursorEl?.parentNode) cursorEl.parentNode.removeChild(cursorEl);
+  cursorEl = null;
+  cursorStyled = null;
 }
 
-chrome.runtime.onMessage.addListener((msg: { type?: string; label?: string }) => {
-  if (msg?.type === 'AGENT_INDICATOR_SHOW') show(msg.label);
-  else if (msg?.type === 'AGENT_INDICATOR_HIDE') hide();
-  return false;
+function showGlow(): void {
+  ensureAnimStyles();
+  if (glowEl) {
+    glowEl.style.display = '';
+  } else {
+    glowEl = document.createElement('div');
+    glowEl.id = 'claude-agent-glow-border';
+    glowEl.style.cssText = `
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      pointer-events: none;
+      z-index: 2147483646;
+      opacity: 0;
+      transition: opacity 0.3s ease-in-out;
+    `;
+    const inner = document.createElement('div');
+    inner.id = 'claude-agent-glow-border-inner';
+    inner.style.cssText = `
+      position: absolute;
+      inset: 0;
+      will-change: opacity;
+      box-shadow:
+        inset 0 0 15px rgba(217, 119, 87, 0.7),
+        inset 0 0 25px rgba(217, 119, 87, 0.5),
+        inset 0 0 35px rgba(217, 119, 87, 0.2);
+    `;
+    glowEl.appendChild(inner);
+    document.body.appendChild(glowEl);
+  }
+  requestAnimationFrame(() => {
+    if (glowEl) glowEl.style.opacity = '1';
+  });
+}
+
+function hideGlow(): void {
+  if (agentOn || staticOn) return;
+  if (glowEl) glowEl.style.opacity = '0';
+  setTimeout(() => {
+    if (agentOn || staticOn) return;
+    if (glowEl?.parentNode) {
+      glowEl.parentNode.removeChild(glowEl);
+      glowEl = null;
+    }
+  }, 300);
+}
+
+function keepAudioWarm(): void {
+  try {
+    if (!audioCtx) {
+      audioCtx = new AudioContext();
+      const gain = audioCtx.createGain();
+      gain.gain.value = 0;
+      gain.connect(audioCtx.destination);
+      const src = audioCtx.createConstantSource();
+      src.connect(gain);
+      src.start();
+      document.addEventListener(
+        'pointerdown',
+        () => {
+          if (agentOn) void audioCtx?.resume().catch(() => {});
+        },
+        { capture: true },
+      );
+    }
+    void audioCtx.resume().catch(() => {});
+  } catch {
+    /* AudioContext may be blocked */
+  }
+}
+
+function buildStopButton(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.id = 'claude-agent-stop-container';
+  wrap.style.cssText = `
+    position: fixed;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    pointer-events: none;
+    z-index: 2147483647;
+  `;
+  const btn = document.createElement('button');
+  btn.id = 'claude-agent-stop-button';
+  btn.type = 'button';
+  btn.innerHTML = `
+    <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor" style="margin-right: 12px; vertical-align: middle;">
+      <path d="M128,20A108,108,0,1,0,236,128,108.12,108.12,0,0,0,128,20Zm0,192a84,84,0,1,1,84-84A84.09,84.09,0,0,1,128,212Zm40-112v56a12,12,0,0,1-12,12H100a12,12,0,0,1-12-12V100a12,12,0,0,1,12-12h56A12,12,0,0,1,168,100Z"></path>
+    </svg>
+    <span style="vertical-align: middle;">Stop Claude</span>
+  `;
+  btn.style.cssText = `
+    position: relative;
+    transform: translateY(100px);
+    padding: 12px 16px;
+    background: #FAF9F5;
+    color: #141413;
+    border: 0.5px solid rgba(31, 30, 29, 0.4);
+    border-radius: 12px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow:
+      0 40px 80px rgba(217, 119, 87, 0.24),
+      0 4px 14px rgba(217, 119, 87, 0.24);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    opacity: 0;
+    user-select: none;
+    pointer-events: auto;
+    white-space: nowrap;
+    margin: 0 auto;
+  `;
+  btn.addEventListener('mouseenter', () => {
+    if (!agentOn) return;
+    btn.style.background = '#F5F4F0';
+  });
+  btn.addEventListener('mouseleave', () => {
+    if (!agentOn) return;
+    btn.style.background = '#FAF9F5';
+  });
+  btn.addEventListener('click', () => {
+    void chrome.runtime.sendMessage({ type: 'STOP_AGENT', fromTabId: 'CURRENT_TAB' });
+  });
+  wrap.appendChild(btn);
+  return wrap;
+}
+
+function paintAgentChrome(): void {
+  showGlow();
+  if (!isMcp) {
+    if (stopEl) {
+      stopEl.style.display = '';
+    } else {
+      stopEl = buildStopButton();
+      document.body.appendChild(stopEl);
+    }
+    requestAnimationFrame(() => {
+      const btn = stopEl?.querySelector('#claude-agent-stop-button') as HTMLElement | null;
+      if (btn) {
+        btn.style.transform = 'translateY(0)';
+        btn.style.opacity = '1';
+      }
+    });
+  }
+  try {
+    if (!cursorEl) {
+      void updatePhantomCursor(
+        lastX ?? Math.round(window.innerWidth / 2),
+        lastY ?? Math.round(window.innerHeight / 2),
+      );
+    }
+    if (cursorStyled) cursorStyled.style.display = '';
+  } catch {
+    /* ignore */
+  }
+}
+
+function startAgent(mcp = false): void {
+  agentOn = true;
+  // Official: each SHOW sets MCP mode for this session — do not sticky-OR forever,
+  // or a later sidepanel turn on the same document loses the Stop pill.
+  isMcp = !!mcp;
+  hiddenForTool = false;
+  wasAgentBeforeHide = false;
+  wasStaticBeforeHide = false;
+  keepAudioWarm();
+  if (!document.hidden) paintAgentChrome();
+}
+
+function stopAgent(): void {
+  if (!agentOn) return;
+  agentOn = false;
+  isMcp = false;
+  hideGlow();
+  void audioCtx?.suspend().catch(() => {});
+
+  if (staticOn) {
+    if (stopEl?.parentNode) stopEl.parentNode.removeChild(stopEl);
+    stopEl = null;
+    removeCursor();
+    return;
+  }
+
+  if (stopEl) {
+    const btn = stopEl.querySelector('#claude-agent-stop-button') as HTMLElement | null;
+    if (btn) {
+      btn.style.transform = 'translateY(100px)';
+      btn.style.opacity = '0';
+    }
+  }
+  setTimeout(() => {
+    if (agentOn) return;
+    if (stopEl?.parentNode) stopEl.parentNode.removeChild(stopEl);
+    stopEl = null;
+    removeCursor();
+  }, 300);
+}
+
+function buildStaticPill(): HTMLElement {
+  const e = document.createElement('div');
+  e.id = 'claude-static-indicator-container';
+  e.innerHTML = `
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:16px;height:16px;display:inline-block;vertical-align:middle;flex-shrink:0;margin-right:8px;">
+      <path d="M3.13946 10.6399L6.28757 8.87462L6.37405 8.73821L6.28757 8.6339H6.13189L5.60432 8.6018L3.80541 8.55366L2.24865 8.48947L0.735135 8.40923H0.492973L0.354595 8.32899L0.181622 8.1685L0.0345946 8.01605L0 7.85557L0.0345946 7.62287L0.138378 7.44634L0.224865 7.40622H0.354595L0.812973 7.44634L1.82486 7.51856L3.34703 7.62287L4.44541 7.68706L6.08 7.85557H6.33946L6.37405 7.75125L6.28757 7.68706L6.21838 7.62287L4.64432 6.55567L2.94054 5.4323L2.04973 4.78235L1.57405 4.45336L1.33189 4.14845L1.22811 3.92377L1.17622 3.69107L1.22811 3.47442L1.33189 3.28185L1.46162 3.13741L1.66054 2.99298H1.87676L2.24865 3.0331L2.39568 3.07322L2.99243 3.53059L4.26378 4.51755L5.92432 5.73721L6.16649 5.93781H6.27892V5.82548L6.16649 5.64092L5.26703 4.01204L4.30703 2.35105L3.87459 1.66098L3.76216 1.25176C3.7391 1.16082 3.69297 0.977332 3.69297 0.970913V0.762287L3.77946 0.505517L3.93513 0.240722L4.18595 0.0882648L4.4627 0H4.67892L4.83459 0.0240722L5.12865 0.0882648L5.4054 0.328987L5.82054 1.27583L6.48649 2.76028L7.52432 4.78235L7.82703 5.38415L7.99135 5.93781L8.05189 6.10632H8.15567V6.01003L8.24216 4.87061L8.39784 3.47442L8.55351 1.67703L8.6054 1.17151L8.85622 0.561685L8.9773 0.417252L9.21946 0.232698H9.35784L9.74703 0.417252L9.97189 0.665998L10.067 0.874624L10.0238 1.17151L9.83351 2.40722L9.46162 4.34102L9.21946 5.64092H9.35784L9.52216 5.47242L10.1795 4.60582L11.2778 3.22568L11.7622 2.68004L12.333 2.07823L12.6962 1.78937L13.0162 1.67703L13.3881 1.78937L13.7168 2.06219L13.8897 2.54363V2.76028L13.6649 3.32197L12.9557 4.22066L12.3676 4.98295L12.0043 5.56871L11.0011 7.02106V7.08526H11.1741L13.0768 6.67603L14.1059 6.49147L15.3341 6.28285L15.5762 6.34704L15.8876 6.53962L15.9481 6.80441L15.8876 7.12538L15.7319 7.34203L14.4173 7.66299L12.8778 7.97593L10.5854 8.51559C10.5705 8.51909 10.56 8.53236 10.56 8.54764C10.56 8.56468 10.573 8.57891 10.59 8.58044L11.6238 8.67402L12.0649 8.69809H13.1459L15.1611 8.85055L15.6886 9.19559L15.9481 9.39619L16 9.62086L15.9481 9.94985L15.8443 10.1023L15.4119 10.3029L15.1351 10.3591L14.0454 10.1023L11.4941 9.49248L10.6205 9.27583H10.4995V9.34804L11.2259 10.0622L12.5665 11.2658L14.2357 12.8225L14.3222 13.0953V13.2076L14.1059 13.5125L13.9243 13.5206L13.8811 13.4804L12.4108 12.3731L12.2984 12.325L11.84 11.8756L10.56 10.7924H10.4735V10.9047L10.7676 11.338L12.333 13.6891L12.4108 14.4112L12.2984 14.6439L11.8919 14.7884L11.667 14.7563L11.4508 14.7081L11.2605 14.5396L10.5254 13.4162L9.5827 11.9719L8.82162 10.672H8.79342C8.76039 10.672 8.73278 10.6972 8.7297 10.73L8.27676 15.5667L8.06919 15.8154L7.6454 16H7.58486L7.17838 15.6951L6.96216 15.1976L7.17838 14.2106L7.43784 12.9268L7.6454 11.9077L7.83567 10.6399L7.95187 10.2164C7.9548 10.2057 7.95069 10.1944 7.94161 10.1881C7.91157 10.1672 7.87034 10.1741 7.84878 10.2037L6.89297 11.5145L5.44 13.4804L4.28973 14.7081L4.01297 14.8205H3.80541L3.5373 14.5717V14.4514L3.58054 14.1304L3.84865 13.7372L5.44 11.7151L6.4 10.4554L7.01872 9.73222C7.04511 9.70139 7.04245 9.65523 7.0127 9.62763C7.00333 9.61894 6.98925 9.61773 6.97854 9.62471L2.75027 12.3811L1.99784 12.4774L1.66919 12.1725L1.71243 11.675L1.86811 11.5145L3.13946 10.6399Z" fill="#D97757"/>
+    </svg>
+    <span style="vertical-align:middle;color:#141413;font-size:14px;display:inline-block;">Claude is active in this tab group</span>
+    <div style="display:inline-block;width:0.5px;height:32px;background:rgba(31,30,29,0.15);margin:0 8px;vertical-align:middle;"></div>
+    <button id="claude-static-chat-button" type="button" style="position:relative;display:inline-flex;align-items:center;justify-content:center;padding:6px;background:transparent;border:none;cursor:pointer;pointer-events:auto;vertical-align:middle;width:32px;height:32px;border-radius:8px;">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="#141413" xmlns="http://www.w3.org/2000/svg"><path d="M10 2.5C14.1421 2.5 17.5 5.85786 17.5 10C17.5 14.1421 14.1421 17.5 10 17.5H3C2.79779 17.5 2.61549 17.3782 2.53809 17.1914C2.4607 17.0046 2.50349 16.7895 2.64648 16.6465L4.35547 14.9365C3.20124 13.6175 2.5 11.8906 2.5 10C2.5 5.85786 5.85786 2.5 10 2.5ZM10 3.5C6.41015 3.5 3.5 6.41015 3.5 10C3.5 11.7952 4.22659 13.4199 5.40332 14.5967L5.46582 14.6729C5.52017 14.7544 5.5498 14.8508 5.5498 14.9502C5.5498 15.0828 5.49709 15.2099 5.40332 15.3037L4.20703 16.5H10C13.5899 16.5 16.5 13.5899 16.5 10C16.5 6.41015 13.5899 3.5 10 3.5Z"/></svg>
+    </button>
+    <button id="claude-static-close-button" type="button" style="position:relative;display:inline-flex;align-items:center;justify-content:center;padding:6px;background:transparent;border:none;cursor:pointer;pointer-events:auto;vertical-align:middle;width:32px;height:32px;margin-left:4px;border-radius:8px;">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M15.1464 4.14642C15.3417 3.95121 15.6582 3.95118 15.8534 4.14642C16.0486 4.34168 16.0486 4.65822 15.8534 4.85346L10.7069 9.99997L15.8534 15.1465C16.0486 15.3417 16.0486 15.6583 15.8534 15.8535C15.6826 16.0244 15.4186 16.0461 15.2245 15.918L15.1464 15.8535L9.99989 10.707L4.85338 15.8535C4.65813 16.0486 4.34155 16.0486 4.14634 15.8535C3.95115 15.6583 3.95129 15.3418 4.14634 15.1465L9.29286 9.99997L4.14634 4.85346C3.95129 4.65818 3.95115 4.34162 4.14634 4.14642C4.34154 3.95128 4.65812 3.95138 4.85338 4.14642L9.99989 9.29294L15.1464 4.14642Z" fill="#141413"/></svg>
+    </button>
+  `;
+  e.style.cssText = `
+    position: fixed;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 6px 6px 16px;
+    background: #FAF9F5;
+    border: 0.5px solid rgba(31, 30, 29, 0.30);
+    border-radius: 14px;
+    box-shadow: 0 40px 80px 0 rgba(0, 0, 0, 0.15);
+    z-index: 2147483647;
+    pointer-events: none;
+    white-space: nowrap;
+    user-select: none;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  `;
+  e.querySelector('#claude-static-chat-button')?.addEventListener('click', () => {
+    void chrome.runtime.sendMessage({ type: 'SWITCH_TO_MAIN_TAB' });
+  });
+  e.querySelector('#claude-static-close-button')?.addEventListener('click', () => {
+    void chrome.runtime.sendMessage({ type: 'DISMISS_STATIC_INDICATOR_FOR_GROUP' });
+    hideStaticPillOnly();
+  });
+  // Allow the two buttons to receive clicks while the bar itself is non-blocking.
+  e.style.pointerEvents = 'auto';
+  return e;
+}
+
+function hideStaticPillOnly(): void {
+  staticDismissed = true;
+  if (staticEl?.parentNode) staticEl.parentNode.removeChild(staticEl);
+  staticEl = null;
+}
+
+function paintStatic(): void {
+  showGlow();
+  if (staticDismissed) return;
+  if (staticEl) {
+    staticEl.style.display = '';
+  } else {
+    staticEl = buildStaticPill();
+    document.body.appendChild(staticEl);
+  }
+}
+
+function startStatic(dismissed: boolean): void {
+  staticOn = true;
+  staticDismissed = dismissed;
+  hiddenForTool = false;
+  if (staticHeartbeat) {
+    clearInterval(staticHeartbeat);
+    staticHeartbeat = null;
+  }
+  staticHeartbeat = window.setInterval(() => {
+    void chrome.runtime
+      .sendMessage({ type: 'STATIC_INDICATOR_HEARTBEAT' })
+      .then((r: { success?: boolean } | undefined) => {
+        if (!r?.success) stopStatic();
+      })
+      .catch(() => stopStatic());
+  }, 5000);
+  if (document.hidden) {
+    if (dismissed) hideStaticPillOnly();
+  } else {
+    paintStatic();
+  }
+}
+
+function stopStatic(): void {
+  if (!staticOn) return;
+  staticOn = false;
+  if (staticHeartbeat) {
+    clearInterval(staticHeartbeat);
+    staticHeartbeat = null;
+  }
+  hideStaticPillOnly();
+  hideGlow();
+}
+
+function onVisibility(): void {
+  if (document.hidden || hiddenForTool) return;
+  if (agentOn) paintAgentChrome();
+  if (staticOn) paintStatic();
+}
+
+function hideForToolUse(): void {
+  wasAgentBeforeHide = agentOn;
+  wasStaticBeforeHide = staticOn;
+  hiddenForTool = true;
+  if (glowEl) glowEl.style.display = 'none';
+  if (stopEl) stopEl.style.display = 'none';
+  if (cursorStyled) cursorStyled.style.display = 'none';
+  if (cursorEl) cursorEl.style.display = 'none';
+  if (staticEl && staticOn) staticEl.style.display = 'none';
+}
+
+function showAfterToolUse(): void {
+  if (wasAgentBeforeHide || wasStaticBeforeHide) {
+    if (glowEl) glowEl.style.display = '';
+  }
+  if (wasAgentBeforeHide && stopEl) stopEl.style.display = '';
+  if (cursorEl) cursorEl.style.display = '';
+  if (cursorStyled) cursorStyled.style.display = '';
+  if (wasStaticBeforeHide && staticEl) staticEl.style.display = '';
+  hiddenForTool = false;
+  wasAgentBeforeHide = false;
+  wasStaticBeforeHide = false;
+  onVisibility();
+}
+
+document.addEventListener('visibilitychange', onVisibility);
+
+type IndicatorMsg = {
+  type?: string;
+  x?: number;
+  y?: number;
+  isMcp?: boolean;
+  dismissed?: boolean;
+  label?: string;
+};
+
+function handleIndicatorMessage(
+  msg: IndicatorMsg,
+  _sender: chrome.runtime.MessageSender,
+  sendResponse: (r: unknown) => void,
+): boolean {
+  switch (msg?.type) {
+    case 'SHOW_AGENT_INDICATORS':
+    case 'AGENT_INDICATOR_SHOW':
+      startAgent(msg.isMcp === true);
+      sendResponse({ success: true });
+      return false;
+
+    case 'HIDE_AGENT_INDICATORS':
+    case 'AGENT_INDICATOR_HIDE':
+      stopAgent();
+      sendResponse({ success: true });
+      return false;
+
+    case 'UPDATE_PHANTOM_CURSOR': {
+      const x = typeof msg.x === 'number' ? msg.x : 0;
+      const y = typeof msg.y === 'number' ? msg.y : 0;
+      void updatePhantomCursor(x, y).then(() => sendResponse({ success: true }));
+      return true; // async
+    }
+
+    case 'HIDE_FOR_TOOL_USE':
+      hideForToolUse();
+      sendResponse({ success: true });
+      return false;
+
+    case 'SHOW_AFTER_TOOL_USE':
+      showAfterToolUse();
+      sendResponse({ success: true });
+      return false;
+
+    case 'SHOW_STATIC_INDICATOR':
+      startStatic(msg.dismissed === true);
+      sendResponse({ success: true });
+      return false;
+
+    case 'HIDE_STATIC_INDICATOR':
+      stopStatic();
+      sendResponse({ success: true });
+      return false;
+
+    case 'HIDE_STATIC_PILL':
+      hideStaticPillOnly();
+      sendResponse({ success: true });
+      return false;
+
+    case 'AGENT_INDICATOR_PING':
+      sendResponse({ ok: true });
+      return false;
+
+    default:
+      return false;
+  }
+}
+
+declare global {
+  interface Window {
+    __agentIndicatorBootstrapped?: boolean;
+    __agentIndicatorHandle?: (
+      msg: IndicatorMsg,
+      sender: chrome.runtime.MessageSender,
+      sendResponse: (r: unknown) => void,
+    ) => boolean;
+  }
+}
+
+window.__agentIndicatorHandle = handleIndicatorMessage;
+if (!window.__agentIndicatorBootstrapped) {
+  window.__agentIndicatorBootstrapped = true;
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    const h = window.__agentIndicatorHandle;
+    if (!h) return false;
+    return h(msg as IndicatorMsg, sender, sendResponse);
+  });
+}
+
+window.addEventListener('beforeunload', () => {
+  stopAgent();
+  stopStatic();
+  removeCursor();
+  void audioCtx?.close().catch(() => {});
+  audioCtx = null;
 });
 
 export {};

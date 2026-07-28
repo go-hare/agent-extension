@@ -18,7 +18,7 @@
  *   browser_batch → YC（Batch — completed/total + nested JC rows）
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   CaretDown,
@@ -32,6 +32,7 @@ import { cn } from './cn';
 import { describeCall } from '../toolDisplay';
 import type { ToolItem } from '../state/transcript';
 import { useUi } from '@/i18n/UiLocaleContext';
+import { getLastScreenshot } from '@/media/catalog';
 
 /** Official chrome browser tools — collapse-only unless error (nS isExpandingDisabled). */
 const BROWSER_TOOLS = new Set([
@@ -44,7 +45,11 @@ const BROWSER_TOOLS = new Set([
   'get_page_text',
   'tabs_context',
   'tabs_create',
-  'tabs_close_id',
+  'tabs_close',
+  'tabs_context_mcp',
+  'tabs_create_mcp',
+  'tabs_close_mcp',
+  'resize_window',
   'upload_image',
   'file_upload',
   'gif_creator',
@@ -107,15 +112,21 @@ export function ToolCall({
       ? ((item.endedAt - item.startedAt) / 1000).toFixed(1)
       : null;
 
-  // Official W/nS icon class is text-text-300 (not text-text-500).
-  // Running state is qi shimmer on the label only — never a spinner on the rail.
+  // Official Yi icon wrapper: text-text-500. Running = qi shimmer on label only.
   const iconEl = (
-    <div className="flex items-center justify-center text-text-300 shrink-0">
+    <div className="flex items-center justify-center text-text-500 shrink-0">
       <Icon
         size={16}
-        className={isError ? 'text-danger-100' : 'text-text-300'}
+        className={isError ? 'text-danger-100' : 'text-text-500'}
       />
     </div>
+  );
+
+  // Official nS secondaryElement (TimelineGroup only): VC thumbnail from
+  // tool_result image, or last tab screenshot + click coordinate.
+  const secondary = useMemo(
+    () => (embedded ? buildSecondaryThumb(item) : null),
+    [embedded, item],
   );
 
   const canToggle = !expandDisabled;
@@ -124,17 +135,17 @@ export function ToolCall({
     : undefined;
 
   // Official Yi row button (k). TimelineGroup: no left icon in row, no py.
+  // When secondaryElement present → gap-2 (not justify-between alone).
   // hideCaret when expand disabled (official browser tools).
-  // Official Yi/Ji: isDisabled → no handleClick + !cursor-default.
-  // Do NOT set HTML disabled — browsers gray out the label and break
-  // text-text-300 / shimmer styling on non-expandable browser tools.
+  // Do NOT set HTML disabled — grays out label / breaks shimmer.
   const rowBtn = (
     <button
       type="button"
       onClick={onToggle}
       aria-expanded={canToggle ? expanded : undefined}
       className={cn(
-        'group/row flex flex-row items-center rounded-lg px-2.5 w-full justify-between',
+        'group/row flex flex-row items-center rounded-lg px-2.5 w-full',
+        secondary ? 'gap-2' : 'justify-between',
         !embedded && 'py-2',
         'text-text-300',
         canToggle
@@ -148,21 +159,24 @@ export function ToolCall({
         <div
           className={cn(
             // Official Yi: "text-body text-text-500 text-left truncate" + w-0 flex-grow
-            // (text-body aliased to font-base metrics in theme.css)
-            'text-body text-text-500 text-left truncate w-0 flex-grow',
+            // (unless secondaryElement — then no w-0 flex-grow)
+            'text-body text-text-500 text-left truncate',
+            !secondary && 'w-0 flex-grow',
             isError && 'text-danger-100',
-            // Official: a ? qi({children:i}) : i  — running label uses qi shimmer
             running && 'shimmertext',
           )}
         >
           {label}
         </div>
+        {secondary ? (
+          <div className="flex items-center shrink-0 ml-2">{secondary}</div>
+        ) : null}
       </div>
 
       <div className="flex flex-row items-center gap-1.5 shrink-0">
         {/*
-          Official secondaryText slot — we use short duration only on Standard
-          shells. Timeline (embedded) browser rows stay label-only like nS.
+          Official secondaryText — duration only on Standard shells.
+          Timeline browser rows are label (+ optional thumb) only like nS.
         */}
         {!embedded && duration && item.status !== 'running' ? (
           <p className="pl-1 text-text-500 font-small shrink-0 whitespace-nowrap">
@@ -212,8 +226,12 @@ export function ToolCall({
   return (
     <div
       className={cn(
-        // Official Yi Standard shell
-        'ease-out rounded-lg border-[0.5px] flex flex-col font-ui leading-normal my-3 border-border-300',
+        // Official Yi Standard shell (with first/last margin tweak):
+        //   ease-out rounded-lg border-[0.5px] flex flex-col font-ui leading-normal
+        //   my-3 border-border-300 + (first? mt-2 : mt-3) + (last? mb-2 : mb-3)
+        'ease-out rounded-lg border-[0.5px] flex flex-col font-ui leading-normal border-border-300',
+        isFirst ? 'mt-2' : 'mt-3',
+        isLast ? 'mb-2' : 'mb-3',
         !expanded && canToggle && 'hover:bg-bg-200',
         expanded && 'bg-bg-000 shadow-sm',
       )}
@@ -347,11 +365,9 @@ function ToolDetail({ item }: { item: ToolItem }) {
         {images.length > 0 ? (
           <div className="p-2 flex flex-col gap-1.5">
             {images.map((img, i) => (
-              <img
+              <ToolResultImage
                 key={i}
-                src={`data:${img.mediaType};base64,${img.data}`}
-                alt="Screenshot sent to the model"
-                className="w-full rounded-lg border-[0.5px] border-border-300"
+                dataUrl={`data:${img.mediaType};base64,${img.data}`}
               />
             ))}
           </div>
@@ -376,6 +392,316 @@ function safeJson(v: unknown): string {
   } catch {
     return String(v);
   }
+}
+
+// ─── Official nS secondaryElement: VC / $C timeline thumbnail ────────────────
+
+/**
+ * Official nS secondaryElement (TimelineGroup):
+ *   1. tool_result image → VC({ dataUrl })  (screenshot / zoom)
+ *   2. else computer click + coordinate + lastScreenshot →
+ *        VC({ dataUrl: lastScreenshot, coordinates })
+ * Catalog `getLastScreenshot` is the session last-shot cache (official N).
+ */
+function buildSecondaryThumb(item: ToolItem): React.ReactNode {
+  const resultImages = item.result?.images;
+  if (resultImages && resultImages.length > 0) {
+    const img = resultImages[0]!;
+    const dataUrl = `data:${img.mediaType};base64,${img.data}`;
+    // Screenshot/zoom results: thumb only (no click marker unless this was a click
+    // that somehow returned an image — still fine to pass coord if present).
+    const coord = readClickCoordinate(item);
+    return <ToolImageThumbnail dataUrl={dataUrl} coordinates={coord} />;
+  }
+
+  // Official: click/hover computer rows reuse the prior tab screenshot + marker.
+  const coord = readClickCoordinate(item);
+  if (!coord) return null;
+  const last = getLastScreenshot(readToolTabId(item));
+  if (!last?.data) return null;
+  const dataUrl = `data:${last.mediaType};base64,${last.data}`;
+  return <ToolImageThumbnail dataUrl={dataUrl} coordinates={coord} />;
+}
+
+function readToolTabId(item: ToolItem): number | undefined {
+  const input = (item.input ?? {}) as { tabId?: unknown };
+  if (typeof input.tabId === 'number') return input.tabId;
+  const fromResult = item.result?.tabContext?.executedOnTabId;
+  if (typeof fromResult === 'number') return fromResult;
+  return item.result?.tabContext?.currentTabId;
+}
+
+function readClickCoordinate(item: ToolItem): [number, number] | undefined {
+  const input = (item.input ?? {}) as {
+    action?: unknown;
+    coordinate?: unknown;
+    coordinates?: unknown;
+    start_coordinate?: unknown;
+  };
+  const action = typeof input.action === 'string' ? input.action : '';
+  const isPointAction =
+    item.name === 'computer' &&
+    [
+      'left_click',
+      'right_click',
+      'double_click',
+      'triple_click',
+      'click',
+      'hover',
+      'mouse_move',
+    ].includes(action);
+  if (!isPointAction) return undefined;
+  const raw = input.coordinate ?? input.coordinates ?? input.start_coordinate;
+  if (!Array.isArray(raw) || raw.length < 2) return undefined;
+  const x = Number(raw[0]);
+  const y = Number(raw[1]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return undefined;
+  return [x, y];
+}
+
+/**
+ * Map image-space coordinates onto a laid-out <img>, accounting for
+ * object-fit letterboxing / cropping (official HC / $C markers).
+ */
+function markerStyleForImage(
+  el: HTMLImageElement,
+  coordinates: [number, number],
+  fit: 'contain' | 'cover',
+): { left: number; top: number } | null {
+  const { clientWidth: boxW, clientHeight: boxH, naturalWidth: nw, naturalHeight: nh } =
+    el;
+  if (!nw || !nh || !boxW || !boxH) return null;
+  const scale =
+    fit === 'cover'
+      ? Math.max(boxW / nw, boxH / nh)
+      : Math.min(boxW / nw, boxH / nh);
+  const dispW = nw * scale;
+  const dispH = nh * scale;
+  const offsetX = (boxW - dispW) / 2;
+  const offsetY = (boxH - dispH) / 2;
+  return {
+    left: offsetX + coordinates[0] * scale,
+    top: offsetY + coordinates[1] * scale,
+  };
+}
+
+/** Expanded tool-result image — full width preview + official HC lightbox. */
+function ToolResultImage({ dataUrl }: { dataUrl: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen(true);
+        }}
+        className="block w-full text-left rounded-lg overflow-hidden border-[0.5px] border-border-300 hover:border-border-200 transition-colors"
+        title="Click to view full screenshot"
+      >
+        <img
+          src={dataUrl}
+          alt="Screenshot sent to the model"
+          className="w-full max-h-48 object-contain bg-bg-000"
+          loading="lazy"
+          decoding="async"
+        />
+      </button>
+      {open
+        ? createPortal(
+            <ScreenshotLightbox dataUrl={dataUrl} onClose={() => setOpen(false)} />,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
+/**
+ * Official $C ToolImageThumbnailPreview + VC wrapper:
+ *   w-9 h-7 rounded border, hover:rotate-2, optional brand click dot.
+ * Opens official HC lightbox.
+ */
+function ToolImageThumbnail({
+  dataUrl,
+  coordinates,
+  className = '',
+}: {
+  dataUrl: string;
+  coordinates?: [number, number];
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const [marker, setMarker] = useState<{ left: number; top: number } | null>(null);
+
+  useEffect(() => {
+    const recompute = () => {
+      const el = imgRef.current;
+      if (!el || !coordinates) {
+        setMarker(null);
+        return;
+      }
+      setMarker(markerStyleForImage(el, coordinates, 'cover'));
+    };
+    const el = imgRef.current;
+    if (!el || !coordinates) return;
+    if (!el.complete) {
+      el.addEventListener('load', recompute);
+      return () => el.removeEventListener('load', recompute);
+    }
+    recompute();
+  }, [dataUrl, coordinates]);
+
+  const onOpen = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setOpen(true);
+  }, []);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={onOpen}
+        className={cn(
+          'relative flex-shrink-0 w-9 h-7 rounded border border-border-300',
+          'hover:border-border-200 hover:rotate-2 transition-all duration-150 ease-out',
+          'hover:shadow-sm overflow-hidden',
+          className,
+        )}
+        title="Click to view full screenshot"
+      >
+        <img
+          ref={imgRef}
+          src={dataUrl}
+          alt="Screenshot thumbnail"
+          className="w-full h-full object-cover"
+          loading="lazy"
+          decoding="async"
+        />
+        {marker ? (
+          <div
+            className="absolute pointer-events-none rounded-full border border-brand-100 w-1.5 h-1.5 bg-brand-100"
+            style={{
+              left: marker.left,
+              top: marker.top,
+              transform: 'translate(-50%, -50%)',
+            }}
+          />
+        ) : null}
+      </button>
+      {open
+        ? createPortal(
+            <ScreenshotLightbox
+              dataUrl={dataUrl}
+              coordinates={coordinates}
+              onClose={() => setOpen(false)}
+            />,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
+/**
+ * Official HC screenshot lightbox (sidepanel-CEYFzMrx.js):
+ *   overlay: flex center, [background-color:hsl(var(--always-black)/0.3)], z-40
+ *   close: absolute -top-2 -right-12, text-always-white
+ *   img: max-w-[90vw] max-h-[80vh] object-contain rounded-lg
+ *   marker: 23×23 rounded-full border-brand-100 bg-brand-100/30
+ */
+function ScreenshotLightbox({
+  dataUrl,
+  coordinates,
+  onClose,
+}: {
+  dataUrl: string;
+  coordinates?: [number, number];
+  onClose: () => void;
+}) {
+  const imgRef = useRef<HTMLImageElement>(null);
+  const [marker, setMarker] = useState<{ left: number; top: number } | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    const recompute = () => {
+      const el = imgRef.current;
+      if (!el || !coordinates) {
+        setMarker(null);
+        return;
+      }
+      setMarker(markerStyleForImage(el, coordinates, 'contain'));
+    };
+    const el = imgRef.current;
+    if (!el || !coordinates) return;
+    const onResize = () => recompute();
+    window.addEventListener('resize', onResize);
+    if (!el.complete) {
+      el.addEventListener('load', recompute);
+      return () => {
+        el.removeEventListener('load', recompute);
+        window.removeEventListener('resize', onResize);
+      };
+    }
+    // Layout may settle a frame after mount (max-h / object-contain).
+    requestAnimationFrame(recompute);
+    return () => window.removeEventListener('resize', onResize);
+  }, [dataUrl, coordinates]);
+
+  return (
+    <div
+      className={cn(
+        'fixed inset-0 z-40 flex items-center justify-center p-6',
+        // Official: hsl(var(--always-black)/0.3) — soft dim, not heavy black/60
+        '[background-color:hsl(var(--always-black)/0.3)]',
+      )}
+      onClick={onClose}
+      role="dialog"
+      aria-modal
+    >
+      <div
+        className="relative flex flex-col items-center gap-4 max-w-[90vw]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute -top-2 -right-12 p-2 text-always-white hover:text-text-200 transition-colors"
+          aria-label="Close preview"
+        >
+          <CloseIcon size={16} />
+        </button>
+        <div className="flex flex-col items-center gap-3">
+          <div className="relative inline-block leading-none">
+            <img
+              ref={imgRef}
+              src={dataUrl}
+              alt="Preview"
+              className="max-w-[90vw] max-h-[80vh] object-contain rounded-lg block"
+            />
+            {marker ? (
+              <div
+                className="absolute pointer-events-none rounded-full border-[0.5px] border-brand-100 w-[23px] h-[23px] bg-brand-100/30"
+                style={{
+                  left: marker.left,
+                  top: marker.top,
+                  transform: 'translate(-50%, -50%)',
+                }}
+              />
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ─── Official gM: update_plan stream row ────────────────────────────────────

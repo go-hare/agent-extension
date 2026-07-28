@@ -45,6 +45,11 @@ import {
 } from '@/scheduling/store';
 import { UiLocaleProvider, useUi } from '@/i18n/UiLocaleContext';
 import { getUiStrings, UI_LOCALES } from '@/i18n/ui';
+import {
+  loadNotificationsPref,
+  setNotificationsPref,
+  type NotificationsPref,
+} from '@/notifications/prefs';
 
 type Probe =
   | { state: 'idle' }
@@ -70,6 +75,14 @@ export function Options() {
   );
   const [micBusy, setMicBusy] = useState(false);
   const [micMsg, setMicMsg] = useState<string | null>(null);
+  const [mcpStatus, setMcpStatus] = useState<{
+    nativeHostInstalled: boolean;
+    mcpConnected: boolean;
+    hostName: string | null;
+    hostLabel: string | null;
+  } | null>(null);
+  const [mcpBusy, setMcpBusy] = useState(false);
+  const [notifPref, setNotifPref] = useState<NotificationsPref>(undefined);
 
   useEffect(() => {
     void (async () => {
@@ -82,6 +95,7 @@ export function Options() {
       setGrants(permissionManager.listGrants());
       setShortcuts(await listShortcuts());
       setSchedules(await listSchedules());
+      setNotifPref(await loadNotificationsPref());
     })();
   }, []);
 
@@ -155,6 +169,59 @@ export function Options() {
     if (!micRequest) return;
     void requestMicrophone();
   }, [micRequest, requestMicrophone]);
+
+  const refreshMcpStatus = useCallback(async () => {
+    setMcpBusy(true);
+    try {
+      const res = (await chrome.runtime.sendMessage({
+        type: 'CHECK_NATIVE_HOST_STATUS',
+      })) as
+        | {
+            ok?: boolean;
+            status?: {
+              nativeHostInstalled: boolean;
+              mcpConnected: boolean;
+              hostName: string | null;
+              hostLabel: string | null;
+            };
+          }
+        | undefined;
+      if (res?.ok && res.status) setMcpStatus(res.status);
+    } catch {
+      /* SW may be restarting */
+    } finally {
+      setMcpBusy(false);
+    }
+  }, []);
+
+  const reconnectMcp = useCallback(async () => {
+    setMcpBusy(true);
+    try {
+      const res = (await chrome.runtime.sendMessage({
+        type: 'RECONNECT_NATIVE_HOST',
+      })) as
+        | {
+            ok?: boolean;
+            status?: {
+              nativeHostInstalled: boolean;
+              mcpConnected: boolean;
+              hostName: string | null;
+              hostLabel: string | null;
+            };
+          }
+        | undefined;
+      if (res?.ok && res.status) setMcpStatus(res.status);
+      else await refreshMcpStatus();
+    } catch {
+      await refreshMcpStatus();
+    } finally {
+      setMcpBusy(false);
+    }
+  }, [refreshMcpStatus]);
+
+  useEffect(() => {
+    void refreshMcpStatus();
+  }, [refreshMcpStatus]);
 
   useEffect(() => {
     document.title = getUiStrings(draft.locale).optionsTitle;
@@ -253,6 +320,12 @@ export function Options() {
         micBusy={micBusy}
         micMsg={micMsg}
         requestMicrophone={requestMicrophone}
+        mcpStatus={mcpStatus}
+        mcpBusy={mcpBusy}
+        refreshMcpStatus={refreshMcpStatus}
+        reconnectMcp={reconnectMcp}
+        notifPref={notifPref}
+        setNotifPref={setNotifPref}
       />
     </UiLocaleProvider>
   );
@@ -286,6 +359,12 @@ function OptionsBody({
   micBusy,
   micMsg,
   requestMicrophone,
+  mcpStatus,
+  mcpBusy,
+  refreshMcpStatus,
+  reconnectMcp,
+  notifPref,
+  setNotifPref,
 }: {
   draft: Settings;
   saved: Settings;
@@ -309,6 +388,17 @@ function OptionsBody({
   micBusy: boolean;
   micMsg: string | null;
   requestMicrophone: () => Promise<void>;
+  mcpStatus: {
+    nativeHostInstalled: boolean;
+    mcpConnected: boolean;
+    hostName: string | null;
+    hostLabel: string | null;
+  } | null;
+  mcpBusy: boolean;
+  refreshMcpStatus: () => Promise<void>;
+  reconnectMcp: () => Promise<void>;
+  notifPref: NotificationsPref;
+  setNotifPref: React.Dispatch<React.SetStateAction<NotificationsPref>>;
   setScDraft: React.Dispatch<
     React.SetStateAction<{ command: string; title: string; description: string; prompt: string }>
   >;
@@ -421,6 +511,60 @@ function OptionsBody({
           </button>
         </div>
         <ProbeLine probe={probe} />
+      </Section>
+
+      <Section title={t.sectionMcp} note={t.sectionMcpNote}>
+        <div className="rounded-xl border-[0.5px] border-border-300 bg-bg-000 px-3 py-3 space-y-2">
+          <div className="flex items-start gap-2">
+            {mcpStatus?.nativeHostInstalled ? (
+              <CheckIcon size={16} className="mt-0.5 shrink-0 text-text-100" />
+            ) : (
+              <AlertIcon size={16} className="mt-0.5 shrink-0 text-text-400" />
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="font-base text-sm text-text-100">
+                {mcpStatus?.nativeHostInstalled
+                  ? t.mcpHostInstalled
+                  : t.mcpHostMissing}
+              </div>
+              {mcpStatus?.nativeHostInstalled && mcpStatus.hostLabel ? (
+                <p className="font-small mt-0.5 text-text-400">
+                  {t.mcpHostLabel(mcpStatus.hostLabel)}
+                  {mcpStatus.hostName ? (
+                    <span className="font-mono text-[0.6875rem]"> · {mcpStatus.hostName}</span>
+                  ) : null}
+                </p>
+              ) : null}
+              {mcpStatus?.nativeHostInstalled ? (
+                <p className="font-small mt-1 text-text-300">
+                  {mcpStatus.mcpConnected ? t.mcpSessionConnected : t.mcpSessionIdle}
+                </p>
+              ) : null}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button
+              type="button"
+              disabled={mcpBusy}
+              onClick={() => void refreshMcpStatus()}
+              className={BTN_GHOST}
+            >
+              {mcpBusy ? (
+                <SpinnerIcon size={14} className="animate-spin" />
+              ) : (
+                t.mcpRefresh
+              )}
+            </button>
+            <button
+              type="button"
+              disabled={mcpBusy}
+              onClick={() => void reconnectMcp()}
+              className={BTN_GHOST}
+            >
+              {t.mcpReconnect}
+            </button>
+          </div>
+        </div>
       </Section>
 
       <Section title={t.sectionWhere} note={t.sectionWhereNote}>
@@ -545,6 +689,33 @@ function OptionsBody({
             ))}
           </select>
         </Field>
+      </Section>
+
+      {/* Official options: Keyboard shortcut → chrome://extensions/shortcuts */}
+      <Section title={t.sectionKeyboard} note={t.sectionKeyboardNote}>
+        <button
+          type="button"
+          onClick={() => {
+            void chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
+          }}
+          className="font-base inline-flex h-9 items-center rounded-lg border-[0.5px] border-border-200 px-[14px] text-sm text-text-100 transition-colors hover:bg-bg-100"
+        >
+          {t.openKeyboardShortcuts}
+        </button>
+      </Section>
+
+      {/* Official options: Notifications (task completion) */}
+      <Section title={t.sectionNotifications} note={t.sectionNotificationsNote}>
+        <Toggle
+          checked={notifPref === 'enabled'}
+          onChange={(v) => {
+            const next = v ? 'enabled' : 'disabled';
+            setNotifPref(next);
+            void setNotificationsPref(next);
+          }}
+          label={t.notificationsEnabledLabel}
+          hint={t.notificationsEnabledHint}
+        />
       </Section>
 
       <Section title={t.sectionTeach} note={t.sectionTeachNote}>

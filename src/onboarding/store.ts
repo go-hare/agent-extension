@@ -7,6 +7,8 @@ const KEY = 'onboarding_flags';
 export interface OnboardingFlags {
   /** User accepted "Before you start" risk screen */
   beforeYouStartDone: boolean;
+  /** Official IZ: "Claude has tab group access" full-screen step */
+  tabGroupAccessShown: boolean;
   /** Pin tip already shown (maxDisplays: 1) */
   pinTipShown: boolean;
   /** User dismissed pairing explainer */
@@ -15,6 +17,7 @@ export interface OnboardingFlags {
 
 const DEFAULTS: OnboardingFlags = {
   beforeYouStartDone: false,
+  tabGroupAccessShown: false,
   pinTipShown: false,
   pairingExplainerSeen: false,
 };

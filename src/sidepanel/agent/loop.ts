@@ -21,17 +21,18 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages';
 import { describeApiError, streamMessage } from '@/api/client';
 import { permissionManager, hostOf } from '@/permissions/manager';
-import { buildSystemPrompt } from '@/prompts/system';
+import { buildSystemPrompt, planModeReminder } from '@/prompts/system';
 import { peekSettings } from '@/storage/settings';
 import { runTool, toolSchemas } from '@/tools/registry';
 import { getTab } from '@/tools/tabs';
-import type {
-  Permission,
-  PermissionDecision,
-  PermissionRequest,
-  PermissionScope,
-  ToolContext,
-  ToolResult,
+import {
+  PERMISSION,
+  type Permission,
+  type PermissionDecision,
+  type PermissionRequest,
+  type PermissionScope,
+  type ToolContext,
+  type ToolResult,
 } from '@/shared/types';
 
 /**
@@ -88,8 +89,9 @@ export async function runTurn(opts: RunOptions): Promise<void> {
         break;
       }
 
-      if (++iterations > MAX_ITERATIONS) {
-        // 把上限作为一条 user 消息告诉模型，让它总结而不是硬断
+      const hitLimit = ++iterations > MAX_ITERATIONS;
+      if (hitLimit) {
+        // One final no-tools turn so the model can summarize, then we break.
         messages.push({
           role: 'user',
           content:
@@ -113,7 +115,8 @@ export async function runTurn(opts: RunOptions): Promise<void> {
         const stream = streamMessage({
           system,
           messages,
-          tools: toolSchemas(),
+          // After the limit, force a text-only wrap-up (no more tool_use loops).
+          tools: hitLimit ? [] : toolSchemas(),
           signal,
         });
 
@@ -162,7 +165,8 @@ export async function runTurn(opts: RunOptions): Promise<void> {
 
       messages.push({ role: 'assistant', content: assistantBlocks });
 
-      if (toolUses.length === 0 || stopReason !== 'tool_use') {
+      // Limit turn: never execute more tools even if the model still emits them.
+      if (hitLimit || toolUses.length === 0 || stopReason !== 'tool_use') {
         emit({ type: 'turn_end', turnId, stopReason });
         break;
       }
@@ -208,12 +212,19 @@ async function buildSystem(tabId: number): Promise<string> {
     /* tab 没了就不带上下文，模型会自己调 tabs_context */
   }
 
-  return buildSystemPrompt({
+  const base = buildSystemPrompt({
     currentUrl,
     currentTitle,
     locale: s.locale,
     javascriptEnabled: s.enableJavascriptTool,
   });
+
+  // Official follow_a_plan: inject a plan-first reminder when Ask before acting.
+  // (Hard gate also lives in runTool — prompt alone is not enough.)
+  if (s.permissionMode === 'ask') {
+    return `${base}\n\n${planModeReminder()}`;
+  }
+  return base;
 }
 
 /**
@@ -286,6 +297,15 @@ function makeToolContext(
       emit({ type: 'permission_resolved', toolUseId, granted: answer.granted });
 
       if (!answer.granted) {
+        // Plan rejection: official asks the model to revise the plan (re-call update_plan).
+        if (permission === PERMISSION.PLAN_APPROVAL) {
+          return {
+            allowed: false,
+            needsPrompt: false,
+            reason:
+              'Plan rejected by user. Ask the user how they would like to change the plan.',
+          };
+        }
         return {
           allowed: false,
           needsPrompt: false,

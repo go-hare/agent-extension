@@ -29,6 +29,19 @@ export type RecordingSessionOptions = {
   getSpeechSince?: (sinceTs: number) => string | undefined;
 };
 
+/** Official B(): host + path, not the full raw URL. */
+function formatNavigateDescription(url: string): string {
+  if (!url) return 'Navigate to page';
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, '');
+    const path = u.pathname === '/' ? '' : u.pathname;
+    return path ? `Navigate to ${host}${path}` : `Navigate to ${host}`;
+  } catch {
+    return `Navigate to ${url}`;
+  }
+}
+
 export class RecordingSession {
   private steps: WorkflowStep[] = [];
   private recording = false;
@@ -143,7 +156,7 @@ export class RecordingSession {
 
     this.push({
       action: 'navigate',
-      description: `Navigate to ${url || 'page'}`,
+      description: formatNavigateDescription(url),
       url,
       tabId,
       timestamp: Date.now() - 100,
@@ -200,7 +213,7 @@ export class RecordingSession {
       if (isRecordableUrl(details.url)) {
         this.push({
           action: 'navigate',
-          description: `Navigate to ${details.url}`,
+          description: formatNavigateDescription(details.url),
           url: details.url,
           tabId: details.tabId,
           timestamp: Date.now(),
@@ -270,7 +283,7 @@ export class RecordingSession {
       this.seenNav.add(tabId);
       this.push({
         action: 'navigate',
-        description: `Navigate to ${tab.url || 'page'}`,
+        description: formatNavigateDescription(tab.url || ''),
         url: tab.url || '',
         tabId,
         timestamp: Date.now() - 100,
@@ -282,6 +295,11 @@ export class RecordingSession {
     if (isRecordableUrl(tab.url)) {
       void this.ensureInject(tabId);
     }
+  }
+
+  /** Drop a step while recording (official onRemoveStep). */
+  removeStep(id: string): void {
+    this.replaceSteps(this.steps.filter((s) => s.id !== id));
   }
 
   private handleKeystroke(

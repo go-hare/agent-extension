@@ -22,10 +22,22 @@ export type TranscriptItem =
   | PermissionItem
   | NoticeItem;
 
+/** Image/file chips shown on the user bubble (official HumanMessage previews). */
+export interface UserAttachment {
+  kind: 'image' | 'file';
+  id: string;
+  name: string;
+  mimeType: string;
+  /** data URL for image thumbs in the transcript */
+  previewUrl?: string;
+}
+
 export interface UserItem {
   kind: 'user';
   id: string;
   text: string;
+  /** Structured attachments for UI (API still gets base64 image blocks separately). */
+  attachments?: UserAttachment[];
   at: number;
 }
 

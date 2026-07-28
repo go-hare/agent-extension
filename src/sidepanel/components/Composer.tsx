@@ -546,17 +546,27 @@ export function Composer({
 
           <div className="px-4 pt-4 pb-2">
             {attachments.length > 0 ? (
-              <div className="mb-2 flex flex-wrap gap-1.5">
+              <div className="mb-2 flex flex-wrap gap-2">
                 {attachments.map((a) => (
-                  <span
+                  <div
                     key={a.id}
-                    className="inline-flex max-w-full items-center gap-1 rounded-md border-[0.5px] border-border-300 bg-bg-100 px-2 py-0.5 font-small text-[0.6875rem] text-text-300"
+                    className="relative group/attach inline-flex items-start"
                   >
-                    <span className="truncate">{a.kind === 'image' ? 'img' : 'file'} {a.name}</span>
+                    {a.kind === 'image' ? (
+                      <img
+                        src={`data:${a.mimeType};base64,${a.data}`}
+                        alt={a.name}
+                        className="h-14 w-14 rounded-lg object-cover border-[0.5px] border-border-300 bg-bg-100"
+                      />
+                    ) : (
+                      <span className="inline-flex max-w-[140px] items-center gap-1 rounded-md border-[0.5px] border-border-300 bg-bg-100 px-2 py-1.5 font-small text-[0.6875rem] text-text-300">
+                        <span className="truncate">{a.name}</span>
+                      </span>
+                    )}
                     <button
                       type="button"
                       aria-label={`Remove ${a.name}`}
-                      className="shrink-0 rounded p-0.5 hover:bg-bg-200"
+                      className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border-[0.5px] border-border-300 bg-bg-000 text-text-300 shadow-sm hover:bg-bg-200"
                       onClick={(e) => {
                         e.stopPropagation();
                         setAttachments((prev) => prev.filter((x) => x.id !== a.id));
@@ -564,7 +574,7 @@ export function Composer({
                     >
                       <X size={12} />
                     </button>
-                  </span>
+                  </div>
                 ))}
               </div>
             ) : null}

@@ -154,9 +154,18 @@ export type UiStrings = {
   toolSetFormValue: string;
   toolCreateNewTab: string;
   toolGetTabs: string;
+  toolCloseTab: string;
+  toolGetMcpTabs: string;
+  toolCreateMcpTab: string;
+  toolCloseMcpTab: string;
+  toolResizeWindow: string;
   toolExecuteJavaScript: string;
   toolUploadImage: string;
   toolStepOf: (current: number, total: number) => string;
+  /** Official FZ language change confirm (yPUC8ZWYmE) */
+  languageChangeConfirm: string;
+  languageChangeConfirmTitle: string;
+  confirm: string;
 
   newPermissionsRequired: string;
   permission: string;
@@ -245,6 +254,15 @@ export type UiStrings = {
   sectionWhereNote: string;
   sectionCapabilities: string;
   sectionAppearance: string;
+  /** Official options: open side panel shortcut → chrome://extensions/shortcuts */
+  sectionKeyboard: string;
+  sectionKeyboardNote: string;
+  openKeyboardShortcuts: string;
+  /** Official options: task completion notifications */
+  sectionNotifications: string;
+  sectionNotificationsNote: string;
+  notificationsEnabledLabel: string;
+  notificationsEnabledHint: string;
   sectionPermissions: string;
   sectionPermissionsNote: string;
   sectionShortcuts: string;
@@ -266,6 +284,19 @@ export type UiStrings = {
   beforeYouStartContinue: string;
   tabGroupAccess: string;
   tabGroupAccessBody: string;
+  /** Official IZ primary CTA */
+  tabGroupOnboardingNext: string;
+  /** Official RZ secondary-tab screen */
+  tabGroupActiveTitle: string;
+  tabGroupActiveBody: string;
+  tabGroupOpenChat: string;
+  /** Official BM notification banner */
+  notifyBannerBody: string;
+  notifyMe: string;
+  dismissBanner: string;
+  /** OS notification when turn completes (enabled prefs) */
+  notifyDoneTitle: string;
+  notifyDoneBody: string;
   automateRepetitive: string;
   claudeCowork: string;
   switchBackClassic: string;
@@ -331,6 +362,17 @@ export type UiStrings = {
   teachSpeechLangHint: string;
   teachCaptureFramesLabel: string;
   teachCaptureFramesHint: string;
+
+  /** Options — open MCP (Desktop / Claude Code native host) */
+  sectionMcp: string;
+  sectionMcpNote: string;
+  mcpHostInstalled: string;
+  mcpHostMissing: string;
+  mcpSessionConnected: string;
+  mcpSessionIdle: string;
+  mcpRefresh: string;
+  mcpReconnect: string;
+  mcpHostLabel: (label: string) => string;
 };
 
 /** Keys not present (or incomplete) in official non-EN packs — English base. */
@@ -405,6 +447,16 @@ const EN_EXTRA: Pack = {
   sectionWhereNote: 'Leave the allow-list empty to permit any site. The block-list always wins.',
   sectionCapabilities: 'Capabilities',
   sectionAppearance: 'Appearance',
+  sectionKeyboard: 'Keyboard shortcut',
+  sectionKeyboardNote:
+    'Set the key combination that opens the side panel in Chrome’s extension shortcuts page.',
+  openKeyboardShortcuts: 'Open shortcut settings',
+  sectionNotifications: 'Notifications',
+  sectionNotificationsNote:
+    'Whether to show a system notification when a task finishes or needs your input.',
+  notificationsEnabledLabel: 'Notify me when tasks complete',
+  notificationsEnabledHint:
+    'When off, the side-panel notification banner will not reappear.',
   sectionPermissionsNote:
     'Sites where you chose “Always allow”. Revoking takes effect immediately.',
   sectionShortcutsNote:
@@ -417,14 +469,24 @@ const EN_EXTRA: Pack = {
   pinDismiss: 'Got it',
   beforeYouStartContinue: 'Continue',
   tabGroupAccessBody:
-    'When your current tab is in a group, Claude only lists and acts on tabs in that group.',
+    'If Claude is open in a tab group, it can access the URL, context and information of all the tabs in that group.',
+  tabGroupOnboardingNext: 'Next',
+  tabGroupActiveTitle: 'Claude is active in this tab group',
+  tabGroupActiveBody:
+    'Claude can research across sites, compare information, or handle multi-tab tasks.',
+  tabGroupOpenChat: 'Open chat',
+  notifyBannerBody: 'Get notified when tasks complete or need input',
+  notifyMe: 'Notify me',
+  dismissBanner: 'Dismiss',
+  notifyDoneTitle: 'Claude is done',
+  notifyDoneBody: 'Your task is completed. Ready to check in?',
   coworkUnavailableTitle: 'Claude Cowork',
   coworkUnavailableBody:
     'The official Cowork side panel embeds claude.ai account chat. This build runs the classic browser agent against your own API key — no Anthropic login required.',
   coworkOpenClaudeAi: 'Open claude.ai',
   pairingTitle: 'Browser already connected',
   pairingBody:
-    'Official pairing links Claude Desktop / claude.ai to the browser extension. Here the side panel is the agent — configure your API key in Settings and start chatting. No pairing code is needed.',
+    'Official pairing links Claude Desktop / Claude Code to this extension over native messaging (open MCP). Tools run in a yellow “Claude (MCP)” tab group. Side-panel chat still uses your own API key in Settings — no pairing code is required for that path.',
   pairingGotIt: 'Got it',
   // fallbacks if pack miss
   keyboardShortcut: 'Keyboard shortcut',
@@ -497,6 +559,17 @@ const EN_EXTRA: Pack = {
   teachSpeechLangHint: 'BCP-47 tag (e.g. en-US, zh-CN). Leave empty to follow the interface language.',
   teachCaptureFramesLabel: 'Capture page frames during recording (for GIF export)',
   teachCaptureFramesHint: 'Takes a screenshot per step so you can export the session as an animated GIF.',
+  // Options — open MCP
+  sectionMcp: 'Desktop & Claude Code (MCP)',
+  sectionMcpNote:
+    'When Claude Desktop or Claude Code is installed with the browser extension host, they can drive this extension over native messaging (open MCP). Tools run in a “Claude (MCP)” tab group. Permission prompts that need the side panel will be denied until you set Act without asking or pre-grant the site.',
+  mcpHostInstalled: 'Native host connected',
+  mcpHostMissing:
+    'No native host found. Install Claude Desktop or Claude Code, then click Reconnect. (openclaude-local is an API companion only and does not provide the tool bridge.)',
+  mcpSessionConnected: 'MCP session active',
+  mcpSessionIdle: 'Host present — waiting for an MCP session from Desktop / Claude Code',
+  mcpRefresh: 'Refresh status',
+  mcpReconnect: 'Reconnect',
 };
 
 const ZH_CN_EXTRA: Pack = {
@@ -566,6 +639,13 @@ const ZH_CN_EXTRA: Pack = {
   sectionWhereNote: '允许列表留空表示不限制站点。阻止列表始终优先。',
   sectionCapabilities: '功能',
   sectionAppearance: '外观',
+  sectionKeyboard: '键盘快捷键',
+  sectionKeyboardNote: '在 Chrome 扩展快捷键页配置打开侧栏的组合键。',
+  openKeyboardShortcuts: '打开快捷键设置',
+  sectionNotifications: '通知',
+  sectionNotificationsNote: '任务完成或需要你确认时，是否弹出系统通知。',
+  notificationsEnabledLabel: '任务完成时通知我',
+  notificationsEnabledHint: '关闭后不再显示侧栏顶部的通知提示条。',
   sectionPermissionsNote: '您选择“始终允许”的网站。撤销立即生效。',
   sectionShortcutsNote: '在聊天中输入 / 使用快捷指令，或按计划运行。首次打开会创建示例。',
   sectionSchedulesNote: '仅在侧栏打开时运行。若关闭，会收到通知 — 这不是无人值守自动化。',
@@ -574,14 +654,24 @@ const ZH_CN_EXTRA: Pack = {
   unsaved: '有未保存的更改',
   pinDismiss: '知道了',
   beforeYouStartContinue: '继续',
-  tabGroupAccessBody: '当前标签页在分组内时，Claude 只会列出并操作该分组中的标签页。',
+  tabGroupAccessBody:
+    '如果 Claude 在标签组中打开，它可以访问该组中所有标签页的 URL、上下文和信息。',
+  tabGroupOnboardingNext: '下一步',
+  tabGroupActiveTitle: 'Claude 在此标签组中处于活动状态',
+  tabGroupActiveBody: 'Claude 可以跨站点研究、比较信息或处理多标签页任务。',
+  tabGroupOpenChat: '打开聊天',
+  notifyBannerBody: '当任务完成或需要输入时获得通知',
+  notifyMe: '通知我',
+  dismissBanner: '忽略',
+  notifyDoneTitle: 'Claude 已完成',
+  notifyDoneBody: '您的任务已完成。准备好检查了吗？',
   coworkUnavailableTitle: 'Claude Cowork',
   coworkUnavailableBody:
     '官方 Cowork 侧栏会嵌入 claude.ai 账号聊天。本构建使用经典浏览器智能体 + 您自己的 API Key，无需 Anthropic 登录。',
   coworkOpenClaudeAi: '打开 claude.ai',
   pairingTitle: '浏览器已连接',
   pairingBody:
-    '官方配对用于把 Claude Desktop / claude.ai 连到浏览器扩展。这里侧栏本身就是智能体 — 在设置中配置 API Key 后即可对话，无需配对码。',
+    '官方配对通过原生消息（open MCP）把 Claude Desktop / Claude Code 连到本扩展，工具在黄色「Claude (MCP)」标签组中执行。侧栏对话仍使用设置里的自有 API Key，无需配对码。',
   pairingGotIt: '知道了',
   keyboardShortcut: '键盘快捷键',
   askBeforeActingDesc: 'Claude 会在采取行动前先规划方法。',
@@ -646,6 +736,16 @@ const ZH_CN_EXTRA: Pack = {
   teachSpeechLangHint: 'BCP-47 标签（如 en-US、zh-CN）。留空则跟随界面语言。',
   teachCaptureFramesLabel: '录制时捕获页面帧（用于导出 GIF）',
   teachCaptureFramesHint: '每个步骤截图一次，便于将会话导出为动态 GIF。',
+  sectionMcp: 'Desktop 与 Claude Code（MCP）',
+  sectionMcpNote:
+    '安装带浏览器扩展宿主的 Claude Desktop 或 Claude Code 后，可通过原生消息（open MCP）驱动本扩展。工具在「Claude (MCP)」标签组中执行。需要侧栏确认的权限会被拒绝，请改用「不询问直接操作」或在选项中预先授权站点。',
+  mcpHostInstalled: '已连接原生宿主',
+  mcpHostMissing:
+    '未找到原生宿主。请安装 Claude Desktop 或 Claude Code 后点「重新连接」。（openclaude-local 仅是 API 伴侣，不提供工具桥接。）',
+  mcpSessionConnected: 'MCP 会话进行中',
+  mcpSessionIdle: '宿主已就绪 — 等待 Desktop / Claude Code 发起 MCP 会话',
+  mcpRefresh: '刷新状态',
+  mcpReconnect: '重新连接',
 };
 
 /**
@@ -999,6 +1099,11 @@ function build(locale: UiLocale): UiStrings {
     toolSetFormValue: p('toolSetFormValue', isZh ? '设置表单值' : 'Set form value'),
     toolCreateNewTab: p('toolCreateNewTab', isZh ? '创建新标签页' : 'Create new tab'),
     toolGetTabs: p('toolGetTabs', isZh ? '获取标签页' : 'Get tabs'),
+    toolCloseTab: p('toolCloseTab', isZh ? '关闭标签页' : 'Close tab'),
+    toolGetMcpTabs: p('toolGetMcpTabs', isZh ? '获取 MCP 标签页' : 'Get MCP tabs'),
+    toolCreateMcpTab: p('toolCreateMcpTab', isZh ? '创建 MCP 标签页' : 'Create MCP tab'),
+    toolCloseMcpTab: p('toolCloseMcpTab', isZh ? '关闭 MCP 标签页' : 'Close MCP tab'),
+    toolResizeWindow: p('toolResizeWindow', isZh ? '调整窗口大小' : 'Resize window'),
     toolExecuteJavaScript: p(
       'toolExecuteJavaScript',
       isZh ? '执行 JavaScript' : 'Execute JavaScript',
@@ -1008,6 +1113,17 @@ function build(locale: UiLocale): UiStrings {
       isZh
         ? `第 ${current} 步，共 ${total} 步`
         : `Step ${current} of ${total}`,
+    languageChangeConfirm: p(
+      'languageChangeConfirm',
+      isZh
+        ? '更改语言将开始新的对话。'
+        : 'Changing the language will start a new chat.',
+    ),
+    languageChangeConfirmTitle: p(
+      'languageChangeConfirmTitle',
+      isZh ? '更改语言？' : 'Change language?',
+    ),
+    confirm: p('confirm', isZh ? '确认' : 'Confirm'),
 
     newPermissionsRequired: p('newPermissionsRequired', 'New permissions required'),
     permission: p('permission', 'Permission'),
@@ -1100,6 +1216,34 @@ function build(locale: UiLocale): UiStrings {
     sectionWhereNote: p('sectionWhereNote', EN_EXTRA.sectionWhereNote!),
     sectionCapabilities: p('sectionCapabilities', 'Capabilities'),
     sectionAppearance: p('sectionAppearance', 'Appearance'),
+    sectionKeyboard: p('sectionKeyboard', isZh ? '键盘快捷键' : 'Keyboard shortcut'),
+    sectionKeyboardNote: p(
+      'sectionKeyboardNote',
+      isZh
+        ? '在 Chrome 扩展快捷键页配置打开侧栏的组合键。'
+        : (EN_EXTRA.sectionKeyboardNote as string),
+    ),
+    openKeyboardShortcuts: p(
+      'openKeyboardShortcuts',
+      isZh ? '打开快捷键设置' : 'Open shortcut settings',
+    ),
+    sectionNotifications: p('sectionNotifications', isZh ? '通知' : 'Notifications'),
+    sectionNotificationsNote: p(
+      'sectionNotificationsNote',
+      isZh
+        ? '任务完成或需要你确认时，是否弹出系统通知。'
+        : (EN_EXTRA.sectionNotificationsNote as string),
+    ),
+    notificationsEnabledLabel: p(
+      'notificationsEnabledLabel',
+      isZh ? '任务完成时通知我' : 'Notify me when tasks complete',
+    ),
+    notificationsEnabledHint: p(
+      'notificationsEnabledHint',
+      isZh
+        ? '关闭后不再显示侧栏顶部的通知提示条。'
+        : (EN_EXTRA.notificationsEnabledHint as string),
+    ),
     sectionPermissions: p('sectionPermissions', 'Your approved sites'),
     sectionPermissionsNote: p('sectionPermissionsNote', EN_EXTRA.sectionPermissionsNote!),
     sectionShortcuts: p('shortcuts', p('sectionShortcuts', 'Shortcuts')),
@@ -1124,6 +1268,38 @@ function build(locale: UiLocale): UiStrings {
     beforeYouStartContinue: p('beforeYouStartContinue', 'Continue'),
     tabGroupAccess: p('tabGroupAccess', 'Claude has tab group access'),
     tabGroupAccessBody: p('tabGroupAccessBody', EN_EXTRA.tabGroupAccessBody!),
+    tabGroupOnboardingNext: p(
+      'tabGroupOnboardingNext',
+      isZh ? '下一步' : 'Next',
+    ),
+    tabGroupActiveTitle: p(
+      'tabGroupActiveTitle',
+      isZh
+        ? 'Claude 在此标签组中处于活动状态'
+        : 'Claude is active in this tab group',
+    ),
+    tabGroupActiveBody: p(
+      'tabGroupActiveBody',
+      isZh
+        ? 'Claude 可以跨站点研究、比较信息或处理多标签页任务。'
+        : EN_EXTRA.tabGroupActiveBody!,
+    ),
+    tabGroupOpenChat: p('tabGroupOpenChat', isZh ? '打开聊天' : 'Open chat'),
+    notifyBannerBody: p(
+      'notifyBannerBody',
+      isZh
+        ? '当任务完成或需要输入时获得通知'
+        : 'Get notified when tasks complete or need input',
+    ),
+    notifyMe: p('notifyMe', isZh ? '通知我' : 'Notify me'),
+    dismissBanner: p('dismissBanner', isZh ? '忽略' : 'Dismiss'),
+    notifyDoneTitle: p('notifyDoneTitle', isZh ? 'Claude 已完成' : 'Claude is done'),
+    notifyDoneBody: p(
+      'notifyDoneBody',
+      isZh
+        ? '您的任务已完成。准备好检查了吗？'
+        : 'Your task is completed. Ready to check in?',
+    ),
     automateRepetitive: p('automateRepetitive', 'Automate your repetitive tasks'),
     claudeCowork: p('claudeCowork', 'Claude Cowork'),
     switchBackClassic: p('switchBackClassic', 'Switch back to classic'),
@@ -1253,6 +1429,26 @@ function build(locale: UiLocale): UiStrings {
       'teachCaptureFramesHint',
       'Takes a screenshot per step so you can export the session as an animated GIF.',
     ),
+
+    sectionMcp: p('sectionMcp', 'Desktop & Claude Code (MCP)'),
+    sectionMcpNote: p(
+      'sectionMcpNote',
+      'When Claude Desktop or Claude Code is installed with the browser extension host, they can drive this extension over native messaging (open MCP). Tools run in a “Claude (MCP)” tab group. Permission prompts that need the side panel will be denied until you set Act without asking or pre-grant the site.',
+    ),
+    mcpHostInstalled: p('mcpHostInstalled', 'Native host connected'),
+    mcpHostMissing: p(
+      'mcpHostMissing',
+      'No native host found. Install Claude Desktop or Claude Code, then click Reconnect. (openclaude-local is an API companion only and does not provide the tool bridge.)',
+    ),
+    mcpSessionConnected: p('mcpSessionConnected', 'MCP session active'),
+    mcpSessionIdle: p(
+      'mcpSessionIdle',
+      'Host present — waiting for an MCP session from Desktop / Claude Code',
+    ),
+    mcpRefresh: p('mcpRefresh', 'Refresh status'),
+    mcpReconnect: p('mcpReconnect', 'Reconnect'),
+    mcpHostLabel: (label) =>
+      isZh ? `宿主：${label}` : `Host: ${label}`,
   };
 }
 

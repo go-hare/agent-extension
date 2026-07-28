@@ -6,8 +6,11 @@
  *
  * 首次打开顺序（对齐官方）：
  *   1. Before you start（风险确认，一次）
- *   2. 空对话时 Pin Claude tip（一次）
- *   3. 正常 EmptyState / transcript
+ *   2. Claude has tab group access（IZ，一次）
+ *   3. 空对话时 Pin Claude tip（一次）
+ *   4. 正常 EmptyState / transcript
+ *   + 打开时把锚定 tab 收进橙色 "Claude" 分组；同组次要 tab 显示 RZ
+ *   + 输入框上方 BM 通知条（Notify me + 铃铛），未设置 notificationsEnabled 时
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -21,9 +24,14 @@ import {
   PermissionStickyShell,
 } from './components/PermissionBubble';
 import { BeforeYouStart } from './components/BeforeYouStart';
+import { ComposerBanner } from './components/ComposerBanner';
 import { PinOnboarding } from './components/PinOnboarding';
 import { ProductExplainer, type ExplainerKind } from './components/ProductExplainer';
 import { SkipModeBorder } from './components/SkipModeBorder';
+import {
+  SecondaryTabScreen,
+  TabGroupAccessOnboarding,
+} from './components/TabGroupScreens';
 import { TeachClaude, type TeachPhase } from './components/TeachClaude';
 import { useSession } from './state/useSession';
 import { clearTodos, getTodos, subscribeTodos } from './state/todos';
@@ -37,6 +45,12 @@ import { getUiStrings, type UiLocale } from '@/i18n/ui';
 import { loadOnboarding, patchOnboarding, type OnboardingFlags } from '@/onboarding/store';
 import { createSchedule } from '@/scheduling/store';
 import type { PermissionItem } from './state/transcript';
+import {
+  loadNotificationsPref,
+  setNotificationsPref,
+  type NotificationsPref,
+} from '@/notifications/prefs';
+import { classifyTab, ensureClaudeGroup } from '@/tabs/groupManager';
 
 export function App() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -91,12 +105,53 @@ function AppShell({
   const [onboarding, setOnboarding] = useState<OnboardingFlags | null>(null);
   const [explainer, setExplainer] = useState<ExplainerKind | null>(null);
   const [teachPhase, setTeachPhase] = useState<TeachPhase | null>(null);
+  /** Official notificationsEnabled — undefined means banner eligible. */
+  const [notifPref, setNotifPref] = useState<NotificationsPref>(undefined);
+  const [showNotifBanner, setShowNotifBanner] = useState(false);
+  /** Secondary tab in a managed Claude group → RZ screen. */
+  const [secondaryMainTabId, setSecondaryMainTabId] = useState<number | null>(null);
+  const groupBootstrappedFor = useRef<number | null>(null);
 
   useEffect(() => subscribeTodos(setTodosState), []);
 
   useEffect(() => {
     void loadOnboarding().then(setOnboarding);
   }, []);
+
+  useEffect(() => {
+    void loadNotificationsPref().then((pref) => {
+      setNotifPref(pref);
+      // Official: show banner only while preference is still unset.
+      if (pref === undefined) setShowNotifBanner(true);
+    });
+  }, []);
+
+  /**
+   * Official open path: ensure the anchored tab lives in an orange "Claude"
+   * group; if this panel is on a secondary group member, show RZ hand-off.
+   */
+  useEffect(() => {
+    const tabId = session.tab?.id;
+    if (!tabId || session.running) return;
+    if (groupBootstrappedFor.current === tabId) return;
+    groupBootstrappedFor.current = tabId;
+
+    void (async () => {
+      try {
+        const role = await classifyTab(tabId);
+        if (role.kind === 'secondary') {
+          setSecondaryMainTabId(role.mainTabId);
+          return;
+        }
+        setSecondaryMainTabId(null);
+        if (role.kind === 'ungrouped') {
+          await ensureClaudeGroup(tabId);
+        }
+      } catch {
+        /* tabGroups API may be missing on older Chrome */
+      }
+    })();
+  }, [session.tab?.id, session.running]);
 
   useEffect(() => {
     void listShortcuts().then(setShortcuts);
@@ -132,9 +187,12 @@ function AppShell({
 
   const onSelectLocale = useCallback(
     (locale: UiLocale) => {
+      // Official: language change starts a new chat (confirm is in Header).
+      session.reset();
+      clearTodos();
       void patchSettings({ locale });
     },
-    [patchSettings],
+    [patchSettings, session],
   );
 
   const onClear = useCallback(() => {
@@ -173,17 +231,36 @@ function AppShell({
     void patchOnboarding({ beforeYouStartDone: true }).then(setOnboarding);
   }, []);
 
+  const finishTabGroupOnboarding = useCallback(() => {
+    void patchOnboarding({ tabGroupAccessShown: true }).then(setOnboarding);
+  }, []);
+
   const dismissPin = useCallback(() => {
     void patchOnboarding({ pinTipShown: true }).then(setOnboarding);
+  }, []);
+
+  const enableNotifications = useCallback(() => {
+    void setNotificationsPref('enabled').then(() => {
+      setNotifPref('enabled');
+      setShowNotifBanner(false);
+    });
+  }, []);
+
+  const dismissNotificationBanner = useCallback(() => {
+    void setNotificationsPref('disabled').then(() => {
+      setNotifPref('disabled');
+      setShowNotifBanner(false);
+    });
   }, []);
 
   const configured = hasUsableCredentials(settings);
   const empty = session.items.length === 0;
 
-  // Official: Working/status lives in-transcript (StatusPill), not above the composer.
+  // Official: StatusPill lives in-transcript. Working text is goal-oriented
+  // (generateWorkingStatus / NG) — e.g. "Gathering page content" — not fixed "Working".
   const statusText = session.awaitingPermission
     ? t.waitingForPermission
-    : t.working;
+    : session.workingStatus?.trim() || t.working;
 
   /**
    * Official permission UX:
@@ -254,28 +331,11 @@ function AppShell({
         run: openOptions,
       },
       {
-        id: 'record-workflow',
-        label: t.teachClaude,
-        description: t.teachSlashDesc,
-        run: openTeach,
-      },
-      {
+        // Official-ish teach entry (single slash — avoid /record-workflow + /teach dup).
         id: 'teach',
         label: t.teachClaude,
         description: t.teachSlashDesc,
         run: openTeach,
-      },
-      {
-        id: 'cowork',
-        label: t.claudeCowork,
-        description: 'About the official Cowork side panel vs this classic agent.',
-        run: () => setExplainer('cowork'),
-      },
-      {
-        id: 'pairing',
-        label: t.pairingTitle,
-        description: 'About official Desktop pairing (not required here).',
-        run: () => setExplainer('pairing'),
       },
       {
         id: 'help',
@@ -324,9 +384,33 @@ function AppShell({
     );
   }
 
+  // Official IZ: tab-group access explainer after risk ack (once).
+  if (!onboarding.tabGroupAccessShown) {
+    return (
+      <div data-theme="claude" className="flex flex-col h-screen bg-bg-100">
+        <TabGroupAccessOnboarding onNext={finishTabGroupOnboarding} />
+      </div>
+    );
+  }
+
+  // Official RZ: this side panel is on a secondary tab in a Claude group.
+  if (secondaryMainTabId != null) {
+    return (
+      <div data-theme="claude" className="flex flex-col h-screen bg-bg-100">
+        <SecondaryTabScreen
+          mainTabId={secondaryMainTabId}
+          onSwitched={() => setSecondaryMainTabId(null)}
+        />
+      </div>
+    );
+  }
+
   // Official pin tip: maxDisplays 1 on empty sidepanel (credentials optional —
   // users still need to discover the toolbar pin before setup).
   const showPin = empty && !onboarding.pinTipShown;
+
+  // Official activeBanner: notification when pref still unset (J === undefined).
+  const activeNotificationBanner = showNotifBanner && notifPref === undefined;
 
   // Full-panel Teach Claude flow replaces chat chrome (official nG surface).
   if (teachPhase) {
@@ -402,6 +486,24 @@ function AppShell({
           No token usage row under the disclaimer.
         */}
         <div className="sticky bottom-0 mx-auto w-full z-[5]">
+          {/*
+            Official chatInput stack (above TipTap):
+              activeBanner → notification BM (Notify me + bell) / error / …
+            Sits in px-3 pad matching official `px-3 md:px-2` wrapper.
+          */}
+          {activeNotificationBanner ? (
+            <div className="px-3 md:px-2 bg-bg-100">
+              <ComposerBanner
+                type="notification"
+                onAction={enableNotifications}
+                onDismiss={dismissNotificationBanner}
+                actionText={t.notifyMe}
+                dismissLabel={t.dismissBanner}
+              >
+                {t.notifyBannerBody}
+              </ComposerBanner>
+            </div>
+          ) : null}
           <Composer
             empty={empty}
             running={session.running}

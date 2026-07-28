@@ -86,6 +86,8 @@ export default defineManifest({
     'notifications',
     'alarms',
     'downloads',
+    // Official open MCP: Desktop / Claude Code connectNative → tool_request
+    'nativeMessaging',
   ],
 
   content_security_policy: {
@@ -141,6 +143,9 @@ export default defineManifest({
         'public/img/cowork_chrome_dark.png',
         // Teach Claude intro hero (runtime getURL — not statically analyzable)
         'public/img/record-workflow-hero.png',
+        // Tab group onboarding / secondary-tab art
+        'public/img/tabgrp.svg',
+        'public/img/tabgrp_dark.svg',
       ],
       use_dynamic_url: false,
     },

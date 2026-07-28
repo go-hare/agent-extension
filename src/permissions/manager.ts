@@ -111,6 +111,12 @@ export class PermissionManager {
   /** 只允许在这些域名工作；空数组 = 不限制 */
   private allowedDomains: string[] = [];
 
+  /**
+   * Official `follow_a_plan` gate (HG / C.current):
+   * until the user approves an update_plan this turn, acting tools are blocked.
+   */
+  private planApprovedThisTurn = false;
+
   /** 待用户回答的请求：toolUseId → resolve */
   private pending = new Map<
     string,
@@ -131,6 +137,7 @@ export class PermissionManager {
     this.turnId = turnId;
     this.turnGrants.clear();
     this.turnDenials.clear();
+    this.planApprovedThisTurn = false;
     await set(SESSION_KEYS.TURN_APPROVED, [], 'session');
     // 设置可能被改过（用户在配置页加了黑名单），每轮重读
     const s = peekSettings();
@@ -142,6 +149,41 @@ export class PermissionManager {
     return this.turnId;
   }
 
+  /** Official: plan approved for this turn (C.current = true). */
+  get planApproved(): boolean {
+    return this.planApprovedThisTurn;
+  }
+
+  /**
+   * After the user approves update_plan:
+   *  - mark plan gate open
+   *  - grant ordinary browse/click/type/read permissions for listed domains
+   *    for the rest of this turn (irreversible / JS / upload still prompt)
+   */
+  async approvePlan(domains: string[]): Promise<void> {
+    this.planApprovedThisTurn = true;
+    const ordinary: Permission[] = [
+      PERMISSION.READ_PAGE_CONTENT,
+      PERMISSION.CLICK,
+      PERMISSION.TYPE,
+      PERMISSION.NAVIGATE,
+      PERMISSION.READ_CONSOLE_MESSAGES,
+    ];
+    for (const raw of domains) {
+      const host = hostOf(raw.includes('://') ? raw : `https://${raw}`) || raw.toLowerCase();
+      if (!host) continue;
+      for (const perm of ordinary) {
+        this.turnGrants.add(`${host}:${perm}`);
+      }
+    }
+    await set(SESSION_KEYS.TURN_APPROVED, [...this.turnGrants], 'session');
+  }
+
+  /** Turn ended without plan / user interrupted — mirror official C.current = false. */
+  clearPlanApproval(): void {
+    this.planApprovedThisTurn = false;
+  }
+
   /**
    * 核心判定。
    *
@@ -150,6 +192,20 @@ export class PermissionManager {
    */
   check(url: string, permission: Permission, opts: CheckOptions = {}): PermissionDecision {
     const host = hostOf(url);
+
+    /*
+     * update_plan / PLAN_APPROVAL is not a page action — official eS has no page URL.
+     * requestPermission often passes url:'' which used to hard-fail isOperableUrl/!host
+     * and never show the plan card. Always prompt; never sticky-deny the whole turn
+     * (model must be able to re-plan after "Make changes").
+     */
+    if (permission === PERMISSION.PLAN_APPROVAL) {
+      return {
+        allowed: false,
+        needsPrompt: true,
+        reason: 'Plan approval always requires an explicit user decision in the side panel.',
+      };
+    }
 
     if (!isOperableUrl(url)) {
       return {
@@ -208,9 +264,9 @@ export class PermissionManager {
     // 高危场景：跳过所有缓存，每次都问。
     const irreversible = looksIrreversible(opts.actionLabel);
     const sensitive = isSensitiveHost(host);
-    // plan / JS 永远不能被 "Act without asking" 静默放行
+    // JS / upload / network 永远不能被 "Act without asking" 静默放行
+    // (PLAN_APPROVAL already returned above.)
     const neverSkip =
-      permission === PERMISSION.PLAN_APPROVAL ||
       permission === PERMISSION.EXECUTE_JAVASCRIPT ||
       permission === PERMISSION.UPLOAD_IMAGE ||
       permission === PERMISSION.READ_NETWORK_REQUESTS;
@@ -294,7 +350,8 @@ export class PermissionManager {
           }
         }
       }
-    } else {
+    } else if (entry.permission !== PERMISSION.PLAN_APPROVAL) {
+      // Plan rejection must not sticky-deny re-planning this turn.
       this.turnDenials.add(key);
     }
 

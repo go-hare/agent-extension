@@ -17,6 +17,7 @@ import type {
 } from '@/shared/types';
 import { PERMISSION } from '@/shared/types';
 import { ACTION_PERMISSION, NO_PERMISSION_ACTIONS } from '@/permissions/rules';
+import { permissionManager } from '@/permissions/manager';
 import { peekSettings } from '@/storage/settings';
 import * as cdp from '@/cdp/session';
 import * as input from '@/cdp/input';
@@ -29,11 +30,13 @@ import {
   getEffectiveTabId,
   getTab,
   getTabUrl,
-  hideIndicator,
+  hideAllIndicators,
   sendToPage,
   showIndicator,
   waitForLoad,
+  withIndicatorHidden,
 } from './tabs';
+import { getLastScreenshot } from '@/media/catalog';
 import {
   type AnthropicToolSchema,
   computerInput,
@@ -60,8 +63,13 @@ import {
   resizeWindowSchema,
   tabsCloseInput,
   tabsCloseSchema,
+  tabsCloseMcpInput,
+  tabsCloseMcpSchema,
   tabsContextSchema,
+  tabsContextMcpInput,
+  tabsContextMcpSchema,
   tabsCreateSchema,
+  tabsCreateMcpSchema,
   todoWriteInput,
   todoWriteSchema,
   updatePlanInput,
@@ -136,6 +144,8 @@ async function guard(
 async function ensureAttached(tabId: number): Promise<ToolResult | null> {
   try {
     await cdp.attach(tabId);
+    // Official: alert/confirm/beforeunload must be handled or CDP Input hangs forever.
+    await obs.installDialogHandler(tabId).catch(() => {});
     return null;
   } catch (e) {
     return { error: msg(e) };
@@ -222,7 +232,10 @@ const computerTool: Tool = {
     if (!NO_PERMISSION_ACTIONS.has(action)) {
       const permission = ACTION_PERMISSION[action] ?? PERMISSION.CLICK;
       const label = describeAction(args);
-      const blocked = await guard(ctx, tabId, permission, label, { actionData: args });
+      // Official CZ CLICK path: pass screenshot + coordinate so the sticky
+      // permission card can render ZC zoom-to-click (not a bare host string).
+      const extra = await permissionPreviewExtra(tabId, permission, args);
+      const blocked = await guard(ctx, tabId, permission, label, extra);
       if (blocked) return blocked;
     }
 
@@ -234,16 +247,21 @@ const computerTool: Tool = {
       if (attachErr) return attachErr;
     }
 
+    // Official: keep glow + phantom cursor + Stop for the whole turn.
+    // showIndicator also on screenshot/zoom so the first action of a turn
+    // still arms chrome; capture path hides it only for the shot itself
+    // (HIDE_FOR_TOOL_USE → SHOW_AFTER_TOOL_USE).
+    if (action !== 'wait') {
+      await showIndicator(tabId);
+    }
+
     try {
       switch (action) {
         case 'screenshot': {
-          await hideIndicator(tabId);
-          await delay(80);
-          // Prefer captureVisibleTab (no "debugging this browser" banner).
-          // Falls back to CDP inside shot.capture when visible capture fails.
+          // HIDE_FOR_TOOL_USE → capture → SHOW_AFTER_TOOL_USE (not full hide).
           let s: Awaited<ReturnType<typeof shot.capture>>;
           try {
-            s = await shot.capture(tabId);
+            s = await withIndicatorHidden(tabId, () => shot.capture(tabId));
           } catch (e) {
             // Last resort: force re-attach + CDP
             const attachErr = await ensureAttached(tabId);
@@ -254,7 +272,7 @@ const computerTool: Tool = {
                   `Try a normal https page, close DevTools on the tab, and retry screenshot.`,
               };
             }
-            s = await shot.capture(tabId);
+            s = await withIndicatorHidden(tabId, () => shot.capture(tabId));
           }
           const entry = putScreenshot({
             data: s.data,
@@ -279,10 +297,8 @@ const computerTool: Tool = {
         }
 
         case 'zoom': {
-          await hideIndicator(tabId);
-          await delay(80);
           const region = args.region!;
-          const s = await shot.captureRegion(tabId, region);
+          const s = await withIndicatorHidden(tabId, () => shot.captureRegion(tabId, region));
           const entry = putScreenshot({
             data: s.data,
             mediaType: s.mediaType,
@@ -321,7 +337,6 @@ const computerTool: Tool = {
         }
 
         case 'scroll': {
-          await showIndicator(tabId, 'Scrolling');
           const [x, y] = shot.toCssCoordinates(tabId, args.coordinate![0], args.coordinate![1]);
           await input.scroll(tabId, x, y, args.scroll_direction!, args.scroll_amount ?? 3);
           await delay(180); // 等无限滚动之类的内容加载
@@ -338,7 +353,6 @@ const computerTool: Tool = {
         case 'hover': {
           const pos = await positionFor(tabId, args);
           if ('error' in pos) return { error: pos.error };
-          await showIndicator(tabId, 'Hovering');
           await input.mouseMove(tabId, pos.x, pos.y);
           await delay(220); // tooltip / 下拉菜单需要时间出现
           return withContext(
@@ -358,7 +372,6 @@ const computerTool: Tool = {
           const button = action === 'right_click' ? 'right' : 'left';
           const clickCount = action === 'double_click' ? 2 : action === 'triple_click' ? 3 : 1;
 
-          await showIndicator(tabId, 'Clicking');
           await input.click(tabId, pos.x, pos.y, {
             button,
             clickCount,
@@ -393,7 +406,6 @@ const computerTool: Tool = {
             args.start_coordinate![1],
           );
           const [ex, ey] = shot.toCssCoordinates(tabId, args.coordinate![0], args.coordinate![1]);
-          await showIndicator(tabId, 'Dragging');
           await input.drag(tabId, [sx, sy], [ex, ey], {
             modifiers: input.parseModifiers(args.modifiers),
           });
@@ -407,7 +419,6 @@ const computerTool: Tool = {
         }
 
         case 'type': {
-          await showIndicator(tabId, 'Typing');
           await input.typeText(tabId, args.text!);
           await delay(120);
           void maybeCaptureGifFrame(tabId, 'type');
@@ -423,7 +434,6 @@ const computerTool: Tool = {
         }
 
         case 'key': {
-          await showIndicator(tabId, 'Pressing keys');
           await input.pressKeys(tabId, args.text!, args.repeat ?? 1);
           await delay(160);
           const dialogs = obs.drainDialogs(tabId);
@@ -445,11 +455,108 @@ const computerTool: Tool = {
       }
     } catch (e) {
       return { error: `Failed to execute ${action}: ${msg(e)}` };
-    } finally {
-      void hideIndicator(tabId);
     }
+    // Do NOT hideIndicator here — official keeps glow/cursor for the whole turn.
+    // Turn end / stop / reset tears chrome down via hideIndicator / hideAllIndicators.
   },
 };
+
+/**
+ * Build the extra fields official CZ expects on the permission prompt:
+ *   screenshot (data URL), actionData with coordinate + viewport size.
+ * Prefer the last model screenshot for this tab (same frame the click
+ * coords refer to); fall back to a fresh captureVisibleTab.
+ */
+async function permissionPreviewExtra(
+  tabId: number,
+  permission: Permission,
+  args: z.infer<typeof computerInput>,
+): Promise<{ screenshot?: string; actionData?: unknown }> {
+  const baseAction = { ...args } as Record<string, unknown>;
+
+  // TYPE: expose text for the official "Text to be typed" block
+  if (permission === PERMISSION.TYPE && typeof args.text === 'string') {
+    return { actionData: { ...baseAction, text: args.text } };
+  }
+
+  if (permission !== PERMISSION.CLICK) {
+    return { actionData: baseAction };
+  }
+
+  // Prefer model-space coordinate (matches last screenshot). Ref resolves to CSS.
+  let coordinate: [number, number] | undefined;
+  let coordSpace: 'image' | 'css' = 'image';
+  if (args.coordinate && args.coordinate.length >= 2) {
+    coordinate = [args.coordinate[0], args.coordinate[1]];
+    coordSpace = 'image';
+  } else if (args.ref) {
+    try {
+      const pos = await positionFor(tabId, args);
+      if (!('error' in pos)) {
+        coordinate = [pos.x, pos.y];
+        coordSpace = 'css';
+      }
+    } catch {
+      /* preview is best-effort */
+    }
+  }
+
+  let screenshot: string | undefined;
+  let imageWidth: number | undefined;
+  let imageHeight: number | undefined;
+
+  const last = getLastScreenshot(tabId);
+  if (last?.data && coordSpace === 'image') {
+    screenshot = `data:${last.mediaType};base64,${last.data}`;
+    imageWidth = last.width;
+    imageHeight = last.height;
+  } else {
+    // Fresh visible capture — coords from ref are CSS; model coords only approximate.
+    try {
+      const s = await shot.captureVisible(tabId);
+      if (s) {
+        screenshot = `data:${s.mediaType};base64,${s.data}`;
+        imageWidth = s.width;
+        imageHeight = s.height;
+      }
+    } catch {
+      /* no preview is better than blocking the prompt */
+    }
+    if (!screenshot && last?.data) {
+      screenshot = `data:${last.mediaType};base64,${last.data}`;
+      imageWidth = last.width;
+      imageHeight = last.height;
+    }
+  }
+
+  const vp = shot.getViewportContext(tabId);
+  // ZC: natural/coordScale = naturalWidth / viewportDimensions.width
+  // image-space coords → viewport = image size; css coords → viewport = CSS size
+  const viewportDimensions =
+    coordSpace === 'css' && vp
+      ? { width: vp.cssWidth, height: vp.cssHeight }
+      : imageWidth && imageHeight
+        ? { width: imageWidth, height: imageHeight }
+        : vp
+          ? { width: vp.imageWidth, height: vp.imageHeight }
+          : undefined;
+
+  // Official MZ reads:
+  //   screenshot: permissionPrompt.actionData?.screenshot
+  //   coordinate: permissionPrompt.actionData?.coordinate
+  // Keep top-level `screenshot` too for PermissionRequest.screenshot consumers.
+  return {
+    screenshot,
+    actionData: {
+      ...baseAction,
+      screenshot,
+      coordinate,
+      viewportDimensions,
+      imageWidth,
+      imageHeight,
+    },
+  };
+}
 
 /** ref 优先于 coordinate；两者都没有时由 zod 拦下了，这里只做兜底。 */
 async function positionFor(
@@ -714,96 +821,30 @@ const formInputTool: Tool = {
 
     try {
       await showIndicator(tabId, 'Filling in a field');
-      const [res] = await chrome.scripting.executeScript({
-        target: { tabId, frameIds: [0] },
-        world: 'MAIN',
-        args: [args.ref, args.value as string | number | boolean],
-        // 在 MAIN world 执行才能拿到 __agentElementMap（content script 也在 MAIN）
-        func: (ref: string, value: string | number | boolean) => {
-          const w = window as unknown as {
-            __agentElementMap?: Record<string, WeakRef<Element>>;
-          };
-          const el = w.__agentElementMap?.[ref]?.deref() as
-            | HTMLInputElement
-            | HTMLTextAreaElement
-            | HTMLSelectElement
-            | undefined;
+      // MUST go through content-script isolated world (AGENT_FORM_INPUT).
+      // executeScript world:'MAIN' cannot see __agentElementMap → false "no longer exists".
+      // Best-effort scroll first so off-screen controlled inputs still mount handlers.
+      try {
+        await sendToPage(tabId, { type: 'AGENT_SCROLL_REF', refId: args.ref });
+        await delay(80);
+      } catch {
+        /* scroll optional */
+      }
 
-          if (!el || !document.contains(el)) {
-            return { ok: false, error: `Element "${ref}" no longer exists. Call read_page again.` };
-          }
-
-          const tag = el.tagName.toLowerCase();
-          const type = (el as HTMLInputElement).type?.toLowerCase();
-
-          // React/Vue 只监听原生 setter 的变更；直接赋 .value 它们收不到。
-          const setNative = (node: HTMLElement, prop: string, v: unknown) => {
-            const proto = Object.getPrototypeOf(node);
-            const desc = Object.getOwnPropertyDescriptor(proto, prop);
-            if (desc?.set) desc.set.call(node, v);
-            else (node as unknown as Record<string, unknown>)[prop] = v;
-          };
-
-          const fire = (node: HTMLElement) => {
-            node.dispatchEvent(new Event('input', { bubbles: true }));
-            node.dispatchEvent(new Event('change', { bubbles: true }));
-          };
-
-          try {
-            if (tag === 'select') {
-              const sel = el as HTMLSelectElement;
-              const want = String(value).toLowerCase();
-              const opt =
-                [...sel.options].find((o) => o.value.toLowerCase() === want) ??
-                [...sel.options].find((o) => o.text.trim().toLowerCase() === want) ??
-                [...sel.options].find((o) => o.text.trim().toLowerCase().includes(want));
-              if (!opt) {
-                return {
-                  ok: false,
-                  error:
-                    `No option matching "${value}". Available: ` +
-                    [...sel.options].map((o) => o.text.trim()).join(' | '),
-                };
-              }
-              sel.value = opt.value;
-              fire(sel);
-              return { ok: true, detail: `selected "${opt.text.trim()}"` };
-            }
-
-            if (type === 'checkbox' || type === 'radio') {
-              const box = el as HTMLInputElement;
-              const want =
-                typeof value === 'boolean' ? value : !/^(false|0|no|off|unchecked)$/i.test(String(value));
-              if (box.checked !== want) box.click(); // click 才会走完整的 label/表单逻辑
-              return { ok: true, detail: `${want ? 'checked' : 'unchecked'}` };
-            }
-
-            if (el.isContentEditable) {
-              el.textContent = String(value);
-              fire(el);
-              return { ok: true, detail: 'set contenteditable text' };
-            }
-
-            el.focus();
-            setNative(el, 'value', String(value));
-            fire(el);
-            return { ok: true, detail: `set value` };
-          } catch (err) {
-            return { ok: false, error: err instanceof Error ? err.message : String(err) };
-          }
-        },
+      const r = await sendToPage<{ ok: boolean; error?: string; detail?: string }>(tabId, {
+        type: 'AGENT_FORM_INPUT',
+        refId: args.ref,
+        value: args.value as string | number | boolean,
       });
 
-      const r = res?.result as { ok: boolean; error?: string; detail?: string } | undefined;
       if (!r) return { error: 'The page script returned nothing. Try read_page and retry.' };
       if (!r.ok) return { error: r.error ?? 'Could not set the value.' };
 
       return withContext(ctx, { output: `${args.ref}: ${r.detail}.` }, tabId);
     } catch (e) {
       return { error: msg(e) };
-    } finally {
-      void hideIndicator(tabId);
     }
+    // Keep agent chrome for the turn (official).
   },
 };
 
@@ -875,9 +916,8 @@ const navigateTool: Tool = {
       );
     } catch (e) {
       return { error: `Navigation failed: ${msg(e)}` };
-    } finally {
-      void hideIndicator(tabId);
     }
+    // Keep agent chrome for the turn (official).
   },
 };
 
@@ -977,6 +1017,81 @@ const tabsCloseTool: Tool = {
   },
 };
 
+// ════════════════════════ MCP tab group tools ════════════════════════
+// Official Desktop / Claude Code names — also callable from sidepanel when useful.
+
+const tabsContextMcpTool: Tool = {
+  name: 'tabs_context_mcp',
+  schema: tabsContextMcpSchema,
+  parse: parser(tabsContextMcpInput, 'tabs_context_mcp'),
+  async run(args: z.infer<typeof tabsContextMcpInput>) {
+    try {
+      const { getOrCreateMcpTabContext, formatMcpTabsList } = await import(
+        '@/mcp/group'
+      );
+      const ctx = await getOrCreateMcpTabContext({
+        createIfEmpty: Boolean(args.createIfEmpty),
+      });
+      if (!ctx) {
+        return {
+          output:
+            'No MCP tab groups found. Use createIfEmpty: true to create one.',
+        };
+      }
+      const body = formatMcpTabsList(ctx.tabs, ctx.tabGroupId, ctx.currentTabId);
+      return {
+        output: ctx.created
+          ? body.replace(
+              `MCP tab group ${ctx.tabGroupId}`,
+              `MCP tab group ${ctx.tabGroupId} [created]`,
+            )
+          : body,
+      };
+    } catch (e) {
+      return { error: `tabs_context_mcp failed: ${msg(e)}` };
+    }
+  },
+};
+
+const tabsCreateMcpTool: Tool = {
+  name: 'tabs_create_mcp',
+  schema: tabsCreateMcpSchema,
+  parse: parser(emptyInput, 'tabs_create_mcp'),
+  async run(_args: never, ctx) {
+    try {
+      const { createMcpTab } = await import('@/mcp/group');
+      const r = await createMcpTab();
+      openedByAgent.add(r.tabId);
+      return withContext(
+        ctx,
+        {
+          output: `Created new tab. Tab ID: ${r.tabId} (group ${r.tabGroupId}).`,
+        },
+        r.tabId,
+      );
+    } catch (e) {
+      return { error: `tabs_create_mcp failed: ${msg(e)}` };
+    }
+  },
+};
+
+const tabsCloseMcpTool: Tool = {
+  name: 'tabs_close_mcp',
+  schema: tabsCloseMcpSchema,
+  parse: parser(tabsCloseMcpInput, 'tabs_close_mcp'),
+  async run(args: z.infer<typeof tabsCloseMcpInput>, ctx) {
+    try {
+      const { closeMcpTab } = await import('@/mcp/group');
+      await cdp.detach(args.tabId).catch(() => {});
+      await closeMcpTab(args.tabId);
+      openedByAgent.delete(args.tabId);
+      return withContext(ctx, { output: `Closed MCP tab ${args.tabId}.` });
+    } catch (e) {
+      return { error: `tabs_close_mcp failed: ${msg(e)}` };
+    }
+  },
+};
+
 // ════════════════════════ read_console_messages ════════════════════════
 
 const readConsoleTool: Tool = {
@@ -1016,7 +1131,8 @@ const readConsoleTool: Tool = {
         list = list.filter((e) => re.test(e.text));
       }
 
-      if (args.clear) obs.stopConsoleCapture(tabId);
+      // Official: clear empties the buffer and keeps capturing — do not stop.
+      if (args.clear) obs.clearConsole(tabId);
 
       if (list.length === 0) {
         const since = startedAt ? ` since capture started ${Math.round((Date.now() - startedAt) / 1000)}s ago` : '';
@@ -1252,24 +1368,44 @@ const updatePlanTool: Tool = {
   schema: updatePlanSchema,
   parse: parser(updatePlanInput, 'update_plan'),
   async run(args: z.infer<typeof updatePlanInput>, ctx) {
+    // Prefer current tab URL only as context; PLAN_APPROVAL no longer requires operable URL.
+    let pageUrl = '';
+    try {
+      pageUrl = await getTabUrl(ctx.tabId);
+    } catch {
+      /* ignore */
+    }
     const decision = await ctx.requestPermission(PERMISSION.PLAN_APPROVAL, {
       actionLabel: 'Approve this plan',
+      url: pageUrl || undefined,
       actionData: { plan: { domains: args.domains, approach: args.approach } },
     });
 
     if (!decision.allowed) {
+      // Official: rejected plan clears the gate so the model must re-plan.
+      permissionManager.clearPlanApproval();
       return {
         error:
           decision.reason ??
-          'The user did not approve this plan. Ask what they would like to change instead of retrying.',
+          'Plan rejected by user. Ask the user how they would like to change the plan.',
       };
     }
 
+    // Official C.current = true + turn-approve listed domains for ordinary actions.
+    await permissionManager.approvePlan(args.domains);
+
+    const steps =
+      args.approach.length > 0
+        ? `\n\nPlan steps:\n${args.approach.map((s, i) => `${i + 1}. ${s}`).join('\n')}`
+        : '';
+
     return {
       output:
-        `Plan approved for: ${args.domains.join(', ')}. ` +
-        `Proceed with the approach you described. Irreversible actions (purchases, sending, ` +
-        `deleting, publishing) still require separate confirmation.`,
+        `User has approved your plan. You can now start executing the plan.` +
+        (args.domains.length ? `\n\nApproved domains: ${args.domains.join(', ')}.` : '') +
+        steps +
+        `\n\nIrreversible actions (purchases, sending, deleting, publishing), JavaScript, ` +
+        `and uploads still require separate confirmation.`,
     };
   },
 };
@@ -1330,6 +1466,9 @@ const ALL: Tool[] = [
   gifCreatorTool,
   shortcutsListTool,
   shortcutsExecuteTool,
+  tabsContextMcpTool,
+  tabsCreateMcpTool,
+  tabsCloseMcpTool,
 ];
 
 const byName = new Map(ALL.map((t) => [t.name, t]));
@@ -1347,6 +1486,43 @@ export function enabledTools(): Tool[] {
 /** 发给模型的 tool 定义。 */
 export function toolSchemas(): AnthropicToolSchema[] {
   return enabledTools().map((t) => t.schema);
+}
+
+/**
+ * Official HG gate (sidepanel-CEYFzMrx.js):
+ *   permissionMode === follow_a_plan ("ask") && !planApproved
+ *     → only update_plan (and turn_answer_start, which we don't have) may run.
+ *   permissionMode === skip_all → gate open (update_plan still allowed anytime).
+ */
+/**
+ * Official HG allowlist while plan is pending (Ask mode):
+ * update_plan plus non-acting helpers so the model can gather context / track steps.
+ * Acting tools (computer, form_input, navigate, JS, …) stay blocked until approved.
+ */
+const PLAN_GATE_ALLOWED = new Set([
+  'update_plan',
+  'todowrite',
+  'tabs_context',
+  'tabs_context_mcp',
+  'shortcuts_list',
+  'read_page',
+  'find',
+  'get_page_text',
+  'read_console_messages',
+  'read_network_requests',
+]);
+
+function checkPlanGate(name: string): ToolResult | null {
+  const s = peekSettings();
+  // Skip mode = official skip_all_permission_checks — no plan-first requirement.
+  if (s.permissionMode !== 'ask') return null;
+  if (permissionManager.planApproved) return null;
+  if (PLAN_GATE_ALLOWED.has(name)) return null;
+  return {
+    error:
+      `You must use update_plan to create and get approval for a plan first.\n\n` +
+      `Use update_plan to present your approach and get user approval before using other tools.`,
+  };
 }
 
 /**
@@ -1373,6 +1549,10 @@ export async function runTool(
     };
   }
 
+  // Official follow_a_plan hard gate — before parse/run so the model always sees the same error.
+  const planBlocked = checkPlanGate(name);
+  if (planBlocked) return planBlocked;
+
   const parsed = tool.parse(rawInput);
   if (!parsed.ok) return { error: parsed.error };
 
@@ -1386,11 +1566,12 @@ export async function runTool(
   }
 }
 
-/** 侧栏关闭 / turn 结束时清理每个 tab 的 CDP 状态。 */
+/** 侧栏关闭 / turn 结束时清理每个 tab 的 CDP 状态 + 页面 agent chrome。 */
 export async function cleanupTools(): Promise<void> {
   for (const tabId of openedByAgent) {
     obs.disposeObservers(tabId);
   }
+  await hideAllIndicators();
   await cdp.detachAll();
 }
 

@@ -139,20 +139,11 @@ export function Transcript({
   }, [items, stickyPermissionId]);
 
   /**
-   * 当前 turn = 最后一条 user 之后的 items。
-   * 官方把这一段收成 DC（StatusPill + timeline tools + final text）。
+   * Official TM/NM: **every** user→assistant segment is a DC turn
+   * (StatusPill + timeline + final text), not only the latest one.
+   * Historical turns stay collapsed on "N steps"; only the active turn streams.
    */
-  const { beforeTurn, turnItems } = useMemo(
-    () => splitActiveTurn(visibleItems),
-    [visibleItems],
-  );
-
-  const turnTools = useMemo(
-    () => turnItems.filter((it): it is ToolItem => it.kind === 'tool'),
-    [turnItems],
-  );
-  const turnHasRunningTool = turnTools.some((it) => it.status === 'running');
-  const turnIsStreaming = running || turnHasRunningTool;
+  const turns = useMemo(() => splitConversation(visibleItems), [visibleItems]);
   const workingLabel = statusText?.trim() || t.working;
 
   const padStyle = useMemo(() => {
@@ -180,16 +171,59 @@ export function Transcript({
               className="flex-1 flex flex-col px-4 max-w-3xl mx-auto w-full pt-1"
               style={padStyle}
             >
-              {renderRows(beforeTurn, onAnswer, { running: false })}
-              {turnItems.length > 0 || turnIsStreaming ? (
-                <AssistantTurn
-                  items={turnItems}
-                  onAnswer={onAnswer}
-                  isStreaming={turnIsStreaming}
-                  workingLabel={workingLabel}
-                  tools={turnTools}
-                />
-              ) : null}
+              {turns.map((turn, index) => {
+                const isLast = index === turns.length - 1;
+                const tools = turn.assistant.filter(
+                  (it): it is ToolItem => it.kind === 'tool',
+                );
+                const turnStreaming =
+                  isLast &&
+                  (running || tools.some((it) => it.status === 'running'));
+
+                // Official DC returns null when timeline blocks are empty and there is
+                // no after-timeline content. While waiting for the first model
+                // token (running, no tools/text yet) we must NOT show "Working".
+                const showAssistant =
+                  turn.assistant.length > 0 ||
+                  (turnStreaming && tools.length > 0);
+
+                return (
+                  <div key={turn.key} className="min-w-0">
+                    {turn.user ? (
+                      <Row item={turn.user} onAnswer={onAnswer} />
+                    ) : null}
+                    {showAssistant ? (
+                      <AssistantTurn
+                        items={turn.assistant}
+                        onAnswer={onAnswer}
+                        isStreaming={turnStreaming}
+                        workingLabel={workingLabel}
+                        tools={tools}
+                      />
+                    ) : null}
+                  </div>
+                );
+              })}
+
+              {/*
+                Official AM extras (ref.extras, min-h-8):
+                  flex items-center gap-3
+                  visible when isAgentRunning && !hasPermissionPrompt
+                    && !lastGroupShowExpandedTimeline
+                  li({ state: "thinking", className: "[&_svg]:!fill-[#D97757]" })
+
+                This is the Claude logo that appears right after the user sends —
+                BEFORE any tool_use / StatusPill "Working". Once the turn has
+                tools, StatusPill owns the spark and this row goes invisible
+                (layout slot kept via min-h-8 + invisible, same as official).
+              */}
+              <ThinkingExtras
+                visible={
+                  running &&
+                  !stickyPermissionId &&
+                  !lastTurnHasTools(turns)
+                }
+              />
             </div>
           )}
         </div>
@@ -198,25 +232,99 @@ export function Transcript({
   );
 }
 
-/** 最后一条 user 消息之后的内容 = 当前 assistant turn。 */
-function splitActiveTurn(items: TranscriptItem[]): {
-  beforeTurn: TranscriptItem[];
-  turnItems: TranscriptItem[];
-} {
-  let lastUser = -1;
-  for (let i = items.length - 1; i >= 0; i -= 1) {
-    if (items[i]!.kind === 'user') {
-      lastUser = i;
-      break;
+/** Last turn already has tools → StatusPill spark replaces extras logo. */
+function lastTurnHasTools(turns: ConversationTurn[]): boolean {
+  if (turns.length === 0) return false;
+  const last = turns[turns.length - 1]!;
+  return last.assistant.some((it) => it.kind === 'tool');
+}
+
+/**
+ * Official post-send Claude logo (AM extras / li state=thinking).
+ * Not a StatusPill — no "Working" label, just the animated spark.
+ */
+function ThinkingExtras({ visible }: { visible: boolean }) {
+  return (
+    <div className="min-h-8">
+      <div
+        className={cn(
+          'flex items-center gap-3',
+          !visible && 'invisible',
+        )}
+        aria-hidden={!visible}
+      >
+        {/*
+          Official: li({ state: compacting|init ? "shimmer" : "thinking",
+                         isInteractive: false,
+                         className: "[&_svg]:!fill-[#D97757]" })
+          We map thinking → writing sprite (same as ClaudeSpark animated path).
+        */}
+        <ClaudeSpark
+          state={visible ? 'thinking' : 'static'}
+          className="[&_svg]:!fill-[#D97757]"
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Split the transcript into conversation turns.
+ *
+ * Each turn = optional leading non-user orphan block, or a user bubble + the
+ * assistant items that follow until the next user (official messageGroups).
+ */
+function splitConversation(items: TranscriptItem[]): ConversationTurn[] {
+  const turns: ConversationTurn[] = [];
+  let i = 0;
+
+  // Orphan prefix (notices / assistant without a user) — rare but keep it.
+  if (items.length > 0 && items[0]!.kind !== 'user') {
+    const assistant: TranscriptItem[] = [];
+    while (i < items.length && items[i]!.kind !== 'user') {
+      assistant.push(items[i]!);
+      i += 1;
     }
+    turns.push({
+      key: `orphan_${assistant[0]?.id ?? '0'}`,
+      user: null,
+      assistant,
+    });
   }
-  if (lastUser < 0) {
-    return { beforeTurn: items, turnItems: [] };
+
+  while (i < items.length) {
+    const user = items[i]!;
+    if (user.kind !== 'user') {
+      // Shouldn't happen after prefix drain; absorb into a synthetic turn.
+      const assistant: TranscriptItem[] = [];
+      while (i < items.length && items[i]!.kind !== 'user') {
+        assistant.push(items[i]!);
+        i += 1;
+      }
+      turns.push({
+        key: `orphan_${assistant[0]?.id ?? i}`,
+        user: null,
+        assistant,
+      });
+      continue;
+    }
+
+    i += 1;
+    const assistant: TranscriptItem[] = [];
+    while (i < items.length && items[i]!.kind !== 'user') {
+      assistant.push(items[i]!);
+      i += 1;
+    }
+    turns.push({ key: user.id, user, assistant });
   }
-  return {
-    beforeTurn: items.slice(0, lastUser + 1),
-    turnItems: items.slice(lastUser + 1),
-  };
+
+  return turns;
+}
+
+interface ConversationTurn {
+  key: string;
+  user: TranscriptItem | null;
+  assistant: TranscriptItem[];
 }
 
 /**
@@ -254,18 +362,17 @@ function AssistantTurn({
     if (isStreaming) setExpanded(false);
   }, [isStreaming]);
 
-  // Official DC: Working while streaming; else "{count} steps" over ALL tools
-  // in the turn (vAKAnIbJ4M), including 1 → "1 step" / "1 步".
+  // Official DC: Working only when tools exist and streaming; else "N steps".
+  // Never invent a Working pill with toolCount === 0 (official DC early-out).
   const pillLabel = isStreaming
     ? workingLabel
-    : toolCount === 0
-      ? workingLabel
-      : toolCount === 1
-        ? t.stepsOne
-        : t.stepsMany(toolCount);
+    : toolCount === 1
+      ? t.stepsOne
+      : t.stepsMany(toolCount);
 
-  // 无工具且未在跑：只渲染 turn 内非 tool 行（纯文本回复）。
-  if (!hasTools && !isStreaming) {
+  // No tools → no DC/StatusPill. Pure text / chips / notices only.
+  // Covers idle text reply, streaming text-only, and empty wait (blank).
+  if (!hasTools) {
     return <>{renderRows(items, onAnswer, { running: false })}</>;
   }
 
@@ -286,7 +393,7 @@ function AssistantTurn({
   ) : null;
 
   const liveSibling =
-    isStreaming && !expanded && hasTools ? (
+    isStreaming && !expanded ? (
       <TimelineGroup
         tools={tools}
         forceExpanded
@@ -301,42 +408,30 @@ function AssistantTurn({
         <Row key={item.id} item={item} onAnswer={onAnswer} />
       ))}
 
-      {hasTools || isStreaming ? (
-        <div className="min-w-0">
-          <div className="grid grid-rows-[auto_auto] min-w-0">
-            <div className="row-start-1 col-start-1 min-w-0">
-              <StatusPill
-                isWorking={isStreaming}
-                statusText={pillLabel}
-                isExpanded={expanded}
-                onToggle={
-                  hasTools || isStreaming
-                    ? () => setExpanded((v) => !v)
-                    : undefined
-                }
-                showSpark={isStreaming}
-              >
-                {expandedBody}
-              </StatusPill>
-            </div>
-            {liveSibling ? (
-              <div className="row-start-2 col-start-1 relative min-w-0">
-                {liveSibling}
-              </div>
-            ) : null}
+      <div className="min-w-0">
+        <div className="grid grid-rows-[auto_auto] min-w-0">
+          <div className="row-start-1 col-start-1 min-w-0">
+            <StatusPill
+              isWorking={isStreaming}
+              statusText={pillLabel}
+              isExpanded={expanded}
+              onToggle={() => setExpanded((v) => !v)}
+              showSpark={isStreaming}
+            >
+              {expandedBody}
+            </StatusPill>
           </div>
+          {liveSibling ? (
+            <div className="row-start-2 col-start-1 relative min-w-0">
+              {liveSibling}
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      </div>
 
       {after.map((item) => (
         <Row key={item.id} item={item} onAnswer={onAnswer} />
       ))}
-
-      {/*
-        Empty streaming turn (no tools/text yet) is already covered by the
-        StatusPill above when `isStreaming` — do NOT mount a second pill
-        (screenshot: two "处理中" rows).
-      */}
     </div>
   );
 }

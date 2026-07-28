@@ -154,6 +154,13 @@ export function stopConsoleCapture(tabId: number): void {
   consoleBuffers.delete(tabId);
 }
 
+/** Clear buffered console entries but keep capture running (official `clear` semantics). */
+export function clearConsole(tabId: number): void {
+  const buf = consoleBuffers.get(tabId);
+  if (!buf) return;
+  buf.entries.length = 0;
+}
+
 // ──────────────────────────── network ────────────────────────────
 
 export interface NetworkEntry {
@@ -347,15 +354,18 @@ export interface DialogRecord {
 }
 
 const dialogLog = new Map<number, DialogRecord[]>();
+/** Dispose fns so re-attach / disposeObservers do not leak Page.javascriptDialogOpening. */
+const dialogDisposers = new Map<number, () => void>();
 
 export async function installDialogHandler(tabId: number): Promise<void> {
   await ensureDomain(tabId, 'Page');
   if (dialogLog.has(tabId)) return;
   dialogLog.set(tabId, []);
 
-  onEvent(tabId, 'Page.javascriptDialogOpening', (raw) => {
+  const off = onEvent(tabId, 'Page.javascriptDialogOpening', (raw) => {
     const p = raw as { type: string; message: string; defaultPrompt?: string };
-    // beforeunload 一律 accept（否则导航永远完不成）
+    // Default accept: beforeunload must complete navigation; alert/confirm must not
+    // freeze CDP Input. navigate.force=false can still surface via drainDialogs.
     const accept = true;
     dialogLog.get(tabId)?.push({
       type: p.type,
@@ -369,6 +379,7 @@ export async function installDialogHandler(tabId: number): Promise<void> {
       ...(p.type === 'prompt' ? { promptText: p.defaultPrompt ?? '' } : {}),
     }).catch(() => {});
   });
+  dialogDisposers.set(tabId, off);
 }
 
 /** 取出并清空自上次调用以来发生的对话框。 */
@@ -383,5 +394,14 @@ export function drainDialogs(tabId: number): DialogRecord[] {
 export function disposeObservers(tabId: number): void {
   stopConsoleCapture(tabId);
   void stopNetworkCapture(tabId);
+  const off = dialogDisposers.get(tabId);
+  if (off) {
+    try {
+      off();
+    } catch {
+      /* ignore */
+    }
+    dialogDisposers.delete(tabId);
+  }
   dialogLog.delete(tabId);
 }

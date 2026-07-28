@@ -110,6 +110,13 @@ export const computerInput = z
         message: 'action "scroll" requires scroll_direction (up/down/left/right).',
       });
     }
+    if (v.action === 'scroll' && !v.coordinate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['coordinate'],
+        message: 'action "scroll" requires coordinate [x, y] (scroll origin in screenshot space).',
+      });
+    }
     if (v.action === 'left_click_drag' && (!v.start_coordinate || !v.coordinate)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -421,9 +428,9 @@ export const navigateSchema: AnthropicToolSchema = {
       force: {
         type: 'boolean',
         description:
-          'If the page shows a "Leave site?" dialog because of unsaved changes, discard those ' +
-          'changes and navigate anyway. Defaults to false: navigation is blocked and an error is ' +
-          'returned so you can decide first.',
+          'If the page shows a "Leave site?" / beforeunload dialog, accept it and navigate. ' +
+          'JS dialogs are auto-handled after debugger attach so CDP does not hang; set true when ' +
+          'you intentionally discard unsaved form state. Defaults to false (same auto-accept path).',
       },
     },
     required: ['url'],
@@ -461,6 +468,59 @@ export const tabsCloseSchema: AnthropicToolSchema = {
   input_schema: {
     type: 'object',
     properties: { tabId: { type: 'number', description: 'Tab ID to close.' } },
+    required: ['tabId'],
+  },
+};
+
+// ───────────────────────────── MCP tab group tools ─────────────────────────────
+// Official names used by Desktop / Claude Code over native messaging.
+
+export const tabsContextMcpInput = z.object({
+  createIfEmpty: z.boolean().optional(),
+});
+
+export const tabsContextMcpSchema: AnthropicToolSchema = {
+  name: 'tabs_context_mcp',
+  description:
+    'Get context information about the current MCP tab group. Returns all tab IDs inside the ' +
+    'group if it exists. CRITICAL: You must get the context at least once before using other ' +
+    'browser automation tools so you know what tabs exist. Each new conversation should create ' +
+    'its own new tab (using tabs_create_mcp) rather than reusing existing tabs, unless the user ' +
+    'explicitly asks to use an existing tab.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      createIfEmpty: {
+        type: 'boolean',
+        description:
+          'Creates a new MCP tab group if none exists (new window + orange "Claude (MCP)" group).',
+      },
+    },
+    required: [],
+  },
+};
+
+export const tabsCreateMcpSchema: AnthropicToolSchema = {
+  name: 'tabs_create_mcp',
+  description: 'Creates a new empty tab in the MCP tab group.',
+  input_schema: { type: 'object', properties: {}, required: [] },
+};
+
+export const tabsCloseMcpInput = z.object({ tabId: z.number() });
+
+export const tabsCloseMcpSchema: AnthropicToolSchema = {
+  name: 'tabs_close_mcp',
+  description:
+    'Close a tab in the MCP tab group by its tab ID. Only tabs within the current session MCP ' +
+    'group can be closed. Call tabs_context_mcp first to get valid tab IDs.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      tabId: {
+        type: 'number',
+        description: 'The ID of the tab to close (must be in the MCP tab group).',
+      },
+    },
     required: ['tabId'],
   },
 };
@@ -630,23 +690,27 @@ export const updatePlanInput = z.object({
 export const updatePlanSchema: AnthropicToolSchema = {
   name: 'update_plan',
   description:
-    'Present a plan to the user for approval before taking actions. The user sees the domains ' +
-    'you intend to visit and your approach. Once approved you can proceed on those domains ' +
-    'without a permission prompt for every ordinary step — irreversible actions still ask.',
+    'Update the plan and present it to the user for approval before proceeding. ' +
+    'In Ask-before-acting mode this must be called (and approved) before any other tool. ' +
+    'After approval, ordinary actions on the listed domains can proceed for this turn; ' +
+    'irreversible actions, JavaScript, and uploads still require separate confirmation.',
   input_schema: {
     type: 'object',
     properties: {
       domains: {
         type: 'array',
         items: { type: 'string' },
-        description: 'The domains you will visit (e.g. ["github.com", "docs.google.com"]).',
+        description:
+          'Websites/domains you plan to visit (e.g. ["github.com", "stackoverflow.com"] or full URLs). ' +
+          'Leave empty only if not applicable.',
       },
       approach: {
         type: 'array',
         items: { type: 'string' },
         description:
-          'High-level steps you will take. Focus on outcomes and key actions, not implementation ' +
-          'details. Be concise — aim for 3-7 items.',
+          'Ordered high-level steps you will follow (e.g. ["Navigate to homepage", ' +
+          '"Search for documentation", "Extract key information"]). Outcome-focused, ' +
+          'no browser tool names. Be concise — aim for 3-7 steps.',
       },
     },
     required: ['domains', 'approach'],

