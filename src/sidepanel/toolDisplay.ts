@@ -1,20 +1,20 @@
 /**
- * 工具的展示元数据：图标 + 人话标签。
+ * Tool display metadata: icon + human label.
  *
- * 单独一个文件而不是塞进 registry：registry 会被 service worker 侧的代码
- * 间接引用，而这里 import 了 React 组件。让 SW 去解析一堆 React 组件是纯浪费，
- * 也容易在 SW 里踩到 `document` 未定义。
+ * Labels mirror official W() in sidepanel-CEYFzMrx.js (KC helper) and the
+ * 1.0.81 locale packs — imperative phrases ("Click", "Read page"), never
+ * progressive ("Clicking…"). Pass `t` from useUi() so ZH packs match.
  *
- * 文案风格**照抄原版**：用祈使式短语（"Click"、"Read page"、"Take screenshot"），
- * 不用进行时（"Clicking…"）。原版 1.0.81 的 bundle 里进行时形式只出现在
- * system prompt 的"反面例子"列表里，不是 UI 文案 —— 抄错了会一眼看出不是同一个产品。
+ * Kept out of registry so the service worker never pulls React icons.
  */
 
+import type { UiStrings } from '@/i18n/ui';
 import {
   Camera,
   Code,
   ExternalLink,
   FileText,
+  FormIcon,
   Globe,
   Keyboard,
   Layers,
@@ -36,24 +36,25 @@ export interface ToolDisplay {
   label: string;
 }
 
-/** 入参未知时的兜底标签。 */
+/** English TABLE fallbacks when describeCall is called without `t`. */
 const TABLE: Record<string, ToolDisplay> = {
   computer: { Icon: MousePointerClick, label: 'Computer action' },
   read_page: { Icon: FileText, label: 'Read page' },
   find: { Icon: Search, label: 'Find element' },
   get_page_text: { Icon: FileText, label: 'Extract page text' },
-  form_input: { Icon: Keyboard, label: 'Set form value' },
+  form_input: { Icon: FormIcon, label: 'Set form value' },
   navigate: { Icon: Globe, label: 'Navigate' },
-  tabs_context: { Icon: SquareDashed, label: 'List tabs' },
-  tabs_create: { Icon: ExternalLink, label: 'Open tab' },
+  tabs_context: { Icon: SquareDashed, label: 'Get tabs' },
+  tabs_create: { Icon: ExternalLink, label: 'Create new tab' },
   tabs_close: { Icon: X, label: 'Close tab' },
+  tabs_close_id: { Icon: X, label: 'Close tab' },
   read_console_messages: { Icon: Terminal, label: 'Read console' },
   read_network_requests: { Icon: Network, label: 'Read network requests' },
-  javascript_tool: { Icon: Code, label: 'Run JavaScript' },
+  javascript_tool: { Icon: Code, label: 'Execute JavaScript' },
   resize_window: { Icon: MoveHorizontal, label: 'Resize window' },
-  update_plan: { Icon: ListChecks, label: 'Update plan' },
-  todowrite: { Icon: ListChecks, label: 'Update checklist' },
-  browser_batch: { Icon: Layers, label: 'Batch actions' },
+  update_plan: { Icon: ListChecks, label: 'Plan' },
+  todowrite: { Icon: ListChecks, label: 'Steps' },
+  browser_batch: { Icon: Layers, label: 'Batch' },
   upload_image: { Icon: Upload, label: 'Upload image' },
   file_upload: { Icon: Upload, label: 'Upload file' },
   gif_creator: { Icon: Camera, label: 'GIF recording' },
@@ -63,13 +64,6 @@ const TABLE: Record<string, ToolDisplay> = {
 
 const FALLBACK: ToolDisplay = { Icon: Terminal, label: 'Tool' };
 
-/**
- * `computer` 的动作细分。
- *
- * computer 一个工具下面有 13 个动作，只显示 "Computer action" 信息量太低 ——
- * 用户分不清 agent 是在截图还是在点"确认付款"。这是**安全相关**的：
- * 用户必须能一眼看出发生了什么，否则授权 UI 形同虚设。
- */
 const COMPUTER_ICON: Record<string, LucideIcon> = {
   screenshot: Camera,
   type: Type,
@@ -78,44 +72,81 @@ const COMPUTER_ICON: Record<string, LucideIcon> = {
 };
 
 /**
- * 算出一次工具调用的展示文案。
- *
- * 有意**只读入参的已知字段**，不把整个 input 拼进标题：
- * 入参可能来自页面内容（比如 type 的文本、click 的目标名），直接渲染等于把
- * 页面文字提升成 UI 文案，是一条注入路径。所以只取受控的短片段，长度截断，
- * 剩下的交给 React 自动转义。
+ * Official W() — stream row label + icon for a tool_use.
+ * Pass `t` from useUi() for locale-correct copy.
  */
-export function describeCall(name: string, input: unknown): ToolDisplay {
+export function describeCall(
+  name: string,
+  input: unknown,
+  t?: UiStrings,
+): ToolDisplay {
   const args = (input ?? {}) as Record<string, unknown>;
 
-  if (name === 'computer') return describeComputer(args);
+  if (name === 'computer') return describeComputer(args, t);
 
   const base = TABLE[name] ?? FALLBACK;
 
   switch (name) {
     case 'read_page': {
       const f = args.filter;
-      if (f === 'interactive') return { ...base, label: 'Read page (interactive)' };
-      if (f === 'all') return { ...base, label: 'Read page (all)' };
+      if (f === 'interactive') {
+        return {
+          ...base,
+          label: t?.toolReadPageInteractive ?? 'Read page (interactive)',
+        };
+      }
+      if (f === 'all') {
+        return {
+          ...base,
+          label: t?.toolReadPageAll ?? 'Read page (all)',
+        };
+      }
+      return { ...base, label: t?.toolReadPage ?? base.label };
+    }
+    case 'find': {
+      const q = str(args.query);
+      if (q) {
+        const short = truncate(q, 30);
+        return {
+          ...base,
+          label: t ? t.toolFindQuery(short) : `Find: “${short}”`,
+        };
+      }
+      return { ...base, label: t?.toolFindElement ?? base.label };
+    }
+    case 'get_page_text':
+      return { ...base, label: t?.toolExtractPageText ?? base.label };
+    case 'navigate': {
+      const url = str(args.url);
+      if (url) {
+        const short = truncate(url, 30);
+        return {
+          ...base,
+          label: t ? t.toolNavigateTo(short) : `Navigate to ${short}`,
+        };
+      }
       return base;
     }
-    case 'find':
-      return str(args.query)
-        ? { ...base, label: `Find: “${truncate(str(args.query)!, 30)}”` }
-        : base;
-    case 'navigate':
-      return str(args.url)
-        ? { ...base, label: `Navigate to ${truncate(shortUrl(str(args.url)!), 30)}` }
-        : base;
     case 'tabs_create':
-      return str(args.url)
-        ? { ...base, label: `Open tab: ${truncate(shortUrl(str(args.url)!), 30)}` }
-        : base;
+      return { ...base, label: t?.toolCreateNewTab ?? 'Create new tab' };
+    case 'tabs_context':
+      return { ...base, label: t?.toolGetTabs ?? 'Get tabs' };
     case 'form_input': {
-      const fields = Array.isArray(args.fields) ? args.fields.length : 0;
-      if (fields === 0) return base;
-      return { ...base, label: `Set ${fields} form field${fields === 1 ? '' : 's'}` };
+      const value = args.value ?? args.text;
+      if (value != null && String(value).length > 0) {
+        const short = truncate(String(value), 20);
+        return {
+          ...base,
+          label: t
+            ? // Official: Set input to “{value}” — no dedicated key in our pack yet
+              `Set input to “${short}”`
+            : `Set input to “${short}”`,
+        };
+      }
+      return { ...base, label: t?.toolSetFormValue ?? base.label };
     }
+    case 'javascript_tool':
+      return { ...base, label: t?.toolExecuteJavaScript ?? 'Execute JavaScript' };
     case 'read_console_messages':
       return str(args.level) && args.level !== 'all'
         ? { ...base, label: `Read console (${str(args.level)})` }
@@ -123,12 +154,13 @@ export function describeCall(name: string, input: unknown): ToolDisplay {
     case 'browser_batch': {
       const n = Array.isArray(args.actions) ? args.actions.length : 0;
       if (n === 0) return base;
-      return { ...base, label: `Batch ${n} action${n === 1 ? '' : 's'}` };
+      return {
+        ...base,
+        label: t ? t.batchActions(0, n) : `Batch — 0/${n} actions`,
+      };
     }
     case 'upload_image':
-      return str(args.imageId)
-        ? { ...base, label: `Upload image ${truncate(str(args.imageId)!, 20)}` }
-        : base;
+      return { ...base, label: t?.toolUploadImage ?? 'Upload image' };
     case 'file_upload': {
       const n =
         (Array.isArray(args.files) ? args.files.length : 0) +
@@ -149,45 +181,96 @@ export function describeCall(name: string, input: unknown): ToolDisplay {
       return str(args.command)
         ? { ...base, label: `Run /${truncate(str(args.command)!, 24)}` }
         : base;
+    case 'todowrite':
+      return describeTodo(args, base, t);
+    case 'update_plan':
+      // Official gM owns Creating/Created/Rejected — not this TABLE label.
+      return base;
     default:
       return base;
   }
 }
 
-function describeComputer(args: Record<string, unknown>): ToolDisplay {
+/** Official TodoWrite: "Step {current} of {total}" / 第 N 步，共 M 步. */
+function describeTodo(
+  args: Record<string, unknown>,
+  base: ToolDisplay,
+  t?: UiStrings,
+): ToolDisplay {
+  const raw = args.todos ?? args.items;
+  if (!Array.isArray(raw) || raw.length === 0) return base;
+  let current = 1;
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i] as { status?: string } | null;
+    const s = item?.status;
+    if (s === 'in_progress' || s === 'pending') {
+      current = i + 1;
+      break;
+    }
+  }
+  return {
+    ...base,
+    label: t
+      ? t.toolStepOf(current, raw.length)
+      : `Step ${current} of ${raw.length}`,
+  };
+}
+
+/**
+ * Official computer action labels (W in KC):
+ *   left_click → "Click" (no coordinate/ref in the stream label)
+ *   type → Type: “…” / Type text
+ */
+function describeComputer(
+  args: Record<string, unknown>,
+  t?: UiStrings,
+): ToolDisplay {
   const action = str(args.action) ?? '';
   const Icon = COMPUTER_ICON[action] ?? MousePointerClick;
 
   const label = ((): string => {
     switch (action) {
       case 'screenshot':
-        return 'Take screenshot';
+        return t?.toolTakeScreenshot ?? 'Take screenshot';
       case 'left_click':
-        return target(args) ? `Click: ${target(args)}` : 'Click';
+        // Official W: plain "Click" — no target suffix on computer left_click.
+        return t?.toolClick ?? 'Click';
       case 'right_click':
-        return 'Right-click';
+        return t?.toolRightClick ?? 'Right-click';
       case 'middle_click':
         return 'Middle-click';
       case 'double_click':
-        return 'Double-click';
+        return t?.toolDoubleClick ?? 'Double-click';
       case 'triple_click':
-        return 'Triple-click';
+        return t?.toolTripleClick ?? 'Triple-click';
       case 'left_click_drag':
-        return 'Drag';
-      case 'type':
-        return str(args.text) ? `Type: “${truncate(str(args.text)!, 30)}”` : 'Type text';
-      case 'key':
-        return str(args.text) ? `Press key: ${truncate(str(args.text)!, 30)}` : 'Press key';
-      case 'scroll':
-        return str(args.scroll_direction)
-          ? `Scroll ${str(args.scroll_direction)}`
-          : 'Scroll';
+        return t?.toolDrag ?? 'Drag';
+      case 'type': {
+        const text = str(args.text);
+        if (text) {
+          const short = truncate(text, 30);
+          return t ? t.toolTypeWith(short) : `Type: “${short}”`;
+        }
+        return t?.toolTypeText ?? 'Type text';
+      }
+      case 'key': {
+        const key = str(args.text) ?? str(args.key);
+        if (key) {
+          return t ? t.toolPressKeyWith(truncate(key, 30)) : `Press key: ${key}`;
+        }
+        return t?.toolPressKey ?? 'Press key';
+      }
+      case 'scroll': {
+        const dir = str(args.scroll_direction);
+        if (dir) return t ? t.toolScrollDir(dir) : `Scroll ${dir}`;
+        return t?.toolScroll ?? 'Scroll';
+      }
       case 'scroll_to':
         return target(args) ? `Scroll to: ${target(args)}` : 'Scroll to element';
       case 'wait': {
         const d = typeof args.duration === 'number' ? args.duration : undefined;
         if (d === undefined) return 'Wait';
-        return `Wait ${d} second${d === 1 ? '' : 's'}`;
+        return t ? t.toolWaitSeconds(d) : `Wait ${d} second${d === 1 ? '' : 's'}`;
       }
       case 'zoom':
         return 'Zoom in';
@@ -199,12 +282,16 @@ function describeComputer(args: Record<string, unknown>): ToolDisplay {
   return { Icon, label };
 }
 
-/** 点击/滚动的目标描述：ref 优先于坐标（ref 是稳定的，坐标只在当次截图里有意义）。 */
 function target(args: Record<string, unknown>): string | undefined {
   const ref = str(args.ref);
   if (ref) return ref;
   const c = args.coordinate;
-  if (Array.isArray(c) && c.length === 2 && typeof c[0] === 'number' && typeof c[1] === 'number') {
+  if (
+    Array.isArray(c) &&
+    c.length === 2 &&
+    typeof c[0] === 'number' &&
+    typeof c[1] === 'number'
+  ) {
     return `(${c[0]}, ${c[1]})`;
   }
   return undefined;

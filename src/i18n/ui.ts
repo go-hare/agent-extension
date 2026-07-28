@@ -124,20 +124,89 @@ export type UiStrings = {
   waitingForPermission: string;
   stepsOne: string;
   stepsMany: (n: number) => string;
+  /** Official Done row under expanded timeline (JXdbo8Vnlw). */
+  done: string;
+
+  /**
+   * Official W() tool-row labels (sidepanel-CEYFzMrx.js KC/W).
+   * Stream rows must use these — not freehand English.
+   */
+  toolTakeScreenshot: string;
+  toolClick: string;
+  toolRightClick: string;
+  toolDoubleClick: string;
+  toolTripleClick: string;
+  toolDrag: string;
+  toolTypeText: string;
+  toolTypeWith: (text: string) => string;
+  toolPressKey: string;
+  toolPressKeyWith: (key: string) => string;
+  toolScroll: string;
+  toolScrollDir: (dir: string) => string;
+  toolWaitSeconds: (n: number) => string;
+  toolReadPage: string;
+  toolReadPageInteractive: string;
+  toolReadPageAll: string;
+  toolFindElement: string;
+  toolFindQuery: (q: string) => string;
+  toolExtractPageText: string;
+  toolNavigateTo: (url: string) => string;
+  toolSetFormValue: string;
+  toolCreateNewTab: string;
+  toolGetTabs: string;
+  toolExecuteJavaScript: string;
+  toolUploadImage: string;
+  toolStepOf: (current: number, total: number) => string;
 
   newPermissionsRequired: string;
   permission: string;
   claudeWantsTo: (verb: string) => string;
   claudeWantsApproval: string;
   allowOnce: string;
+  /** Official CZ primary button: "Allow this action" (not "Allow once"). */
+  allowThisAction: string;
   decline: string;
   approvePlan: string;
   makeChanges: string;
   alwaysAllowSite: string;
   browseClickType: string;
   sitePermissionsDisabled: string;
+  /** Official eS plan card title: "Claude’s plan" */
+  claudePlanTitle: string;
+  /** Official eS: "Allow actions on these sites" */
+  planAllowSites: string;
+  /** Official eS: "Approach to follow" */
+  planApproach: string;
+  /** Official eS footer (no settings link). */
+  planFooter: string;
+  /** Compact answered plan chip. */
+  planApproved: string;
+  planRejected: string;
+  /**
+   * Official gM stream row for update_plan
+   * (P0iWYFMJG2 / aXfQ2L8ErF / 7wJz7kSrLT / hW8KjZhriV).
+   */
+  creatingPlan: string;
+  createdPlan: string;
+  planRejectedRow: string;
+  planLabel: string;
+  /**
+   * Official YC browser_batch header (q1/79Ks14U) + error secondary (Q7Tmii1wrQ).
+   */
+  batchActions: (completed: number, total: number) => string;
+  batchStoppedOnError: string;
+  /** Official TYPE permission body label: "Text to be typed:" */
+  textToBeTyped: string;
+  /**
+   * Official permission footer is one ICU string with an inline
+   * `<settingsButton>…</settingsButton>`. We split it into:
+   *   permissionFooter + settingsLink button + permissionFooterAfter
+   * so Chinese mid-string 「设置」does not become "…设置… 设置.".
+   */
   permissionFooter: string;
   settingsLink: string;
+  /** Text after the settings link (e.g. "中撤销网站权限。" / "."). */
+  permissionFooterAfter: string;
   allowedOnce: string;
   allowedRemembered: string;
   declined: string;
@@ -292,6 +361,19 @@ const EN_EXTRA: Pack = {
   permission: 'Permission',
   claudeWantsApproval: 'Claude wants your approval to:',
   sitePermissionsDisabled: 'Site-level permissions are disabled for this site.',
+  claudePlanTitle: "Claude's plan",
+  planAllowSites: 'Allow actions on these sites',
+  planApproach: 'Approach to follow',
+  planFooter:
+    "Claude will only use the sites listed. You'll be asked before accessing anything else.",
+  planApproved: 'Plan approved',
+  planRejected: 'Rejected',
+  creatingPlan: 'Creating plan...',
+  createdPlan: 'Created a plan',
+  planRejectedRow: 'Plan rejected',
+  planLabel: 'Plan',
+  batchStoppedOnError: 'Stopped on error',
+  textToBeTyped: 'Text to be typed:',
   permissionFooter:
     'Claude will not purchase items, create accounts, or bypass captchas without input. Revoke site permissions in',
   settingsLink: 'settings',
@@ -443,6 +525,19 @@ const ZH_CN_EXTRA: Pack = {
   permission: '权限',
   claudeWantsApproval: 'Claude 需要您批准：',
   sitePermissionsDisabled: '此网站已禁用站点级权限。',
+  claudePlanTitle: "Claude's plan",
+  planAllowSites: '允许在这些网站上执行操作',
+  planApproach: '遵循的方法',
+  planFooter: 'Claude 将仅使用列出的网站。访问其他内容前会询问您。',
+  planApproved: '计划已批准',
+  planRejected: '已拒绝',
+  // Official zh-CN pack (P0iWYFMJG2 / aXfQ2L8ErF / 7wJz7kSrLT / hW8KjZhriV)
+  creatingPlan: '正在创建计划...',
+  createdPlan: '创建了计划',
+  planRejectedRow: '计划被拒绝',
+  planLabel: '计划',
+  batchStoppedOnError: '因错误停止',
+  textToBeTyped: '要输入的文本：',
   permissionFooter: '未经输入，Claude 不会购买商品、创建账户或绕过验证码。在',
   settingsLink: '设置',
   allowedOnce: '已允许一次。',
@@ -747,14 +842,32 @@ const LOCALE_EXTRAS: Partial<Record<UiLocale, Pack>> = {
   'id-ID': CRITICAL_OVERRIDES['id-ID'],
 };
 
-function stripSettingsTag(raw: string | undefined, fallback: string): string {
-  if (!raw) return fallback;
-  // official: "... in <settingsButton>settings</settingsButton>."
-  return raw
-    .replace(/<\/?settingsButton>/gi, '')
-    .replace(/\.\s*$/, '')
-    .replace(/\s+in\s+settings\s*$/i, '')
-    .trim();
+/**
+ * Official: "... in <settingsButton>settings</settingsButton>."
+ * Chinese:  "...在<settingsButton>设置</settingsButton>中撤销网站权限。"
+ * Split so the link sits where the tag was — never append a second 「设置」.
+ */
+function parseSettingsFooter(
+  raw: string | undefined,
+  fallbackBefore: string,
+  fallbackLink: string,
+): { before: string; link: string; after: string } {
+  if (raw) {
+    const m = raw.match(
+      /^(.*?)<settingsButton>([\s\S]*?)<\/settingsButton>(.*)$/i,
+    );
+    if (m) {
+      // Keep surrounding whitespace exactly as the locale pack wrote it
+      // (EN: "... in " + link + "."; ZH: "...在" + link + "中…").
+      return {
+        before: m[1] ?? '',
+        link: (m[2] ?? '').trim() || fallbackLink,
+        after: m[3] ?? '',
+      };
+    }
+  }
+  // Fallback packs that already dropped the tag (EN_EXTRA style).
+  return { before: fallbackBefore, link: fallbackLink, after: '' };
 }
 
 function build(locale: UiLocale): UiStrings {
@@ -767,9 +880,10 @@ function build(locale: UiLocale): UiStrings {
 
   const p = (key: string, fallback = ''): string => pack[key] ?? fallback;
 
-  const footerBase = stripSettingsTag(
+  const footerParts = parseSettingsFooter(
     p('permissionFooterRaw'),
     p('permissionFooter', EN_EXTRA.permissionFooter!),
+    p('settingsLink', p('settings', 'settings')),
   );
 
   const isZh = locale === 'zh-CN' || locale === 'zh-TW';
@@ -836,10 +950,64 @@ function build(locale: UiLocale): UiStrings {
     permissionModeAria: (label) =>
       isZh ? `权限模式：${label}` : `Permission mode: ${label}`,
 
-    working: p('working', 'Working'),
-    waitingForPermission: p('waitingForPermission', 'Waiting for permission request...'),
+    working: p('working', isZh ? '处理中' : 'Working'),
+    waitingForPermission: p(
+      'waitingForPermission',
+      isZh ? '等待权限请求...' : 'Waiting for permission request...',
+    ),
+    // Official vAKAnIbJ4M → simplified (no full ICU plural engine)
     stepsOne: isZh ? '1 步' : '1 step',
     stepsMany: (n) => (isZh ? `${n} 步` : `${n} steps`),
+    done: p('done', isZh ? '完成' : 'Done'),
+
+    // Official W() tool labels (ids from 1.0.81 packs)
+    toolTakeScreenshot: p('toolTakeScreenshot', isZh ? '截取屏幕' : 'Take screenshot'),
+    toolClick: p('toolClick', isZh ? '点击' : 'Click'),
+    toolRightClick: p('toolRightClick', isZh ? '右键点击' : 'Right-click'),
+    toolDoubleClick: p('toolDoubleClick', isZh ? '双击' : 'Double-click'),
+    toolTripleClick: p('toolTripleClick', isZh ? '三击' : 'Triple-click'),
+    toolDrag: p('toolDrag', isZh ? '拖动' : 'Drag'),
+    toolTypeText: p('toolTypeText', isZh ? '输入文本' : 'Type text'),
+    toolTypeWith: (text) =>
+      isZh ? `输入：“${text}”` : `Type: “${text}”`,
+    toolPressKey: p('toolPressKey', isZh ? '按键' : 'Press key'),
+    toolPressKeyWith: (key) =>
+      isZh ? `按键：${key}` : `Press key: ${key}`,
+    toolScroll: p('toolScroll', isZh ? '滚动' : 'Scroll'),
+    toolScrollDir: (dir) => (isZh ? `滚动 ${dir}` : `Scroll ${dir}`),
+    toolWaitSeconds: (n) =>
+      isZh
+        ? n === 1
+          ? '等待 1 秒'
+          : `等待 ${n} 秒`
+        : n === 1
+          ? 'Wait 1 second'
+          : `Wait ${n} seconds`,
+    toolReadPage: p('toolReadPage', isZh ? '读取页面' : 'Read page'),
+    toolReadPageInteractive: p(
+      'toolReadPageInteractive',
+      isZh ? '读取页面（交互式）' : 'Read page (interactive)',
+    ),
+    toolReadPageAll: p('toolReadPageAll', isZh ? '读取页面（全部）' : 'Read page (all)'),
+    toolFindElement: p('toolFindElement', isZh ? '查找元素' : 'Find element'),
+    toolFindQuery: (q) => (isZh ? `查找：“${q}”` : `Find: “${q}”`),
+    toolExtractPageText: p(
+      'toolExtractPageText',
+      isZh ? '提取页面文本' : 'Extract page text',
+    ),
+    toolNavigateTo: (url) => (isZh ? `导航至 ${url}` : `Navigate to ${url}`),
+    toolSetFormValue: p('toolSetFormValue', isZh ? '设置表单值' : 'Set form value'),
+    toolCreateNewTab: p('toolCreateNewTab', isZh ? '创建新标签页' : 'Create new tab'),
+    toolGetTabs: p('toolGetTabs', isZh ? '获取标签页' : 'Get tabs'),
+    toolExecuteJavaScript: p(
+      'toolExecuteJavaScript',
+      isZh ? '执行 JavaScript' : 'Execute JavaScript',
+    ),
+    toolUploadImage: p('toolUploadImage', isZh ? '上传图片' : 'Upload image'),
+    toolStepOf: (current, total) =>
+      isZh
+        ? `第 ${current} 步，共 ${total} 步`
+        : `Step ${current} of ${total}`,
 
     newPermissionsRequired: p('newPermissionsRequired', 'New permissions required'),
     permission: p('permission', 'Permission'),
@@ -847,6 +1015,8 @@ function build(locale: UiLocale): UiStrings {
       isZh ? `Claude 想要${verb}：` : `Claude wants to ${verb}:`,
     claudeWantsApproval: p('claudeWantsApproval', 'Claude wants your approval to:'),
     allowOnce: p('allowOnce', 'Allow once'),
+    // Official CZ primary: "Allow this action" (MCP remote uses "Allow once")
+    allowThisAction: p('allowThisAction', 'Allow this action'),
     decline: p('decline', 'Decline'),
     approvePlan: p('approvePlan', 'Approve plan'),
     makeChanges: p('makeChanges', 'Make changes'),
@@ -856,8 +1026,42 @@ function build(locale: UiLocale): UiStrings {
       'sitePermissionsDisabled',
       'Site-level permissions are disabled for this site.',
     ),
-    permissionFooter: footerBase,
-    settingsLink: p('settingsLink', p('settings', 'settings')),
+    // Official eS (update_plan) — keep EN title "Claude's plan" like the official ZH pack.
+    claudePlanTitle: p('claudePlanTitle', "Claude's plan"),
+    planAllowSites: p(
+      'planAllowSites',
+      isZh ? '允许在这些网站上执行操作' : 'Allow actions on these sites',
+    ),
+    planApproach: p('planApproach', isZh ? '遵循的方法' : 'Approach to follow'),
+    planFooter: p(
+      'planFooter',
+      isZh
+        ? 'Claude 将仅使用列出的网站。访问其他内容前会询问您。'
+        : "Claude will only use the sites listed. You'll be asked before accessing anything else.",
+    ),
+    planApproved: p('planApproved', isZh ? '计划已批准' : 'Plan approved'),
+    planRejected: p('planRejected', isZh ? '已拒绝' : 'Rejected'),
+    // Official gM update_plan stream labels
+    creatingPlan: p('creatingPlan', isZh ? '正在创建计划...' : 'Creating plan...'),
+    createdPlan: p('createdPlan', isZh ? '创建了计划' : 'Created a plan'),
+    planRejectedRow: p(
+      'planRejectedRow',
+      isZh ? '计划被拒绝' : 'Plan rejected',
+    ),
+    planLabel: p('planLabel', isZh ? '计划' : 'Plan'),
+    // Official YC: "Batch — {completed}/{total} actions"
+    batchActions: (completed, total) =>
+      isZh
+        ? `批处理 — ${completed}/${total} 个操作`
+        : `Batch — ${completed}/${total} actions`,
+    batchStoppedOnError: p(
+      'batchStoppedOnError',
+      isZh ? '因错误停止' : 'Stopped on error',
+    ),
+    textToBeTyped: p('textToBeTyped', isZh ? '要输入的文本：' : 'Text to be typed:'),
+    permissionFooter: footerParts.before,
+    settingsLink: footerParts.link,
+    permissionFooterAfter: footerParts.after,
     allowedOnce: p('allowedOnce', 'Allowed once.'),
     allowedRemembered: p('allowedRemembered', 'Allowed — and remembered for this site.'),
     declined: p('declined', 'Declined.'),
@@ -884,7 +1088,7 @@ function build(locale: UiLocale): UiStrings {
     cancel: p('cancel', 'Cancel'),
     skipPermissions: p('skipPermissions', 'Skip permissions'),
 
-    hideSteps: p('hideSteps', 'Hide steps'),
+    hideSteps: p('hideSteps', isZh ? '隐藏步骤' : 'Hide steps'),
     stepOne: p('stepOne', isZh ? '1 步' : '1 step'),
     stepsCount: (n) => (isZh ? `${n} 步` : `${n} steps`),
 

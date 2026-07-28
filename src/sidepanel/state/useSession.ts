@@ -20,7 +20,6 @@ import { cleanupTools, clearTodos, clearSessionMedia } from '@/tools/registry';
 import { setShortcutRunner } from '@/tools/shortcuts';
 import { hasUsableCredentials, peekSettings } from '@/storage/settings';
 import type { PermissionScope } from '@/shared/types';
-import { resetAgentGroup } from '@/tools/tabs';
 import { drainQueue, requeueFront } from '@/scheduling/store';
 import { resolveActiveBrowserTab } from '@/tabs/activeTab';
 import {
@@ -369,7 +368,6 @@ export function useSession(): SessionState {
     setAwaiting(false);
     clearTodos();
     clearSessionMedia();
-    resetAgentGroup();
     void cleanupTools();
   }, []);
 

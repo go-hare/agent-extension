@@ -1,25 +1,32 @@
 /**
  * 授权气泡 —— 整个扩展里**唯一**的 grant 入口。
  *
- * 布局 / className / 文案结构逐字对齐原版 `CZ` 组件
- * （`assets/sidepanel-CEYFzMrx.js`）：
+ * 两种官方布局（`assets/sidepanel-CEYFzMrx.js`）：
  *
- *   根: bg-bg-000 rounded-[14px]（无 my-2）
- *   头: flex items-center gap-2 py-[10px] px-4  +  20px 盾牌 + "New permissions required"
- *   线: border-t border-border-300 mb-4
- *   体: space-y-4 px-4  →  "Claude wants to {verb}:" + host（font-*-code, dir=ltr）
- *   选: 与 space-y-4 **同级**（不在里面）
- *       Allow this action / Decline / 分割线 / Always allow… (height "55px")
- *   脚: "Claude will not purchase items… settings."
+ * 1. **CZ** — 站点动作授权（read/click/type/navigate/…）
+ *    根 bg-bg-000 rounded-[14px]；盾牌 + "New permissions required"；
+ *    wants-to + host；Allow / Decline / Always allow…
  *
- * 按钮 QC 的 className 原样。
+ * 2. **eS** — `update_plan` / PLAN_APPROVAL（截图里的「Claude's plan」）
+ *    根同 rounded-[14px]；ListChecks + "Claude’s plan"；
+ *    domains（Globe）+ 编号 approach；**实心** Approve plan + Make changes；
+ *    无 Always 行；页脚 "will only use the sites listed…"
+ *
+ * 外层 sticky 外壳（border + shadow + h-3 spacer）由 App 挂载。
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from './cn';
 import { availableScopes } from '@/permissions/manager';
 import { PERMISSION, type PermissionScope } from '@/shared/types';
-import { ShieldIcon } from './icons';
+import {
+  EscKeyIcon,
+  Globe,
+  ListChecks,
+  MetaOrCtrlHint,
+  ReturnKeyIcon,
+  ShieldIcon,
+} from './icons';
 import type { PermissionItem } from '../state/transcript';
 import { useUi } from '@/i18n/UiLocaleContext';
 
@@ -27,17 +34,49 @@ import { useUi } from '@/i18n/UiLocaleContext';
 const KEY_ARM_DELAY = 150;
 const COMMIT_DELAY = 150;
 
-/** actionLabel 可能含页面来源文字，限长防止撑爆布局。 */
-const LABEL_MAX = 160;
-
 export interface PermissionBubbleProps {
   item: PermissionItem;
   onAnswer: (toolUseId: string, granted: boolean, scope: PermissionScope) => void;
+  /**
+   * answered 时 compact 摘要（sticky 层只展示未决请求）。
+   * 流内历史行仍可渲染 answered 态。
+   */
+  compactAnswered?: boolean;
 }
 
-type ActiveChoice = 'once' | 'deny' | 'always' | null;
+type ActiveChoice = 'once' | 'deny' | 'always' | 'approve' | 'reject' | null;
 
-export function PermissionBubble({ item, onAnswer }: PermissionBubbleProps) {
+type PlanStructure = {
+  domains: Array<string | { domain: string; category?: string }>;
+  approach: string[];
+};
+
+function readPlanStructure(actionData: unknown): PlanStructure {
+  const raw = (actionData as { plan?: unknown } | null)?.plan ?? actionData;
+  if (!raw || typeof raw !== 'object') return { domains: [], approach: [] };
+  const o = raw as { domains?: unknown; approach?: unknown };
+  const domains = Array.isArray(o.domains) ? o.domains : [];
+  const approach = Array.isArray(o.approach)
+    ? o.approach.filter((s): s is string => typeof s === 'string')
+    : [];
+  return { domains, approach };
+}
+
+function domainName(
+  entry: string | { domain: string; category?: string },
+): { name: string; isForceAsk: boolean } {
+  if (typeof entry === 'string') return { name: entry, isForceAsk: false };
+  return {
+    name: entry.domain,
+    isForceAsk: entry.category === 'category3',
+  };
+}
+
+export function PermissionBubble({
+  item,
+  onAnswer,
+  compactAnswered = true,
+}: PermissionBubbleProps) {
   const t = useUi();
   const { request, answer } = item;
   const answered = answer !== undefined;
@@ -45,6 +84,10 @@ export function PermissionBubble({ item, onAnswer }: PermissionBubbleProps) {
   const scopes = useMemo(() => availableScopes(request.permission), [request.permission]);
   const canAlways = scopes.includes('always');
   const isPlan = request.permission === PERMISSION.PLAN_APPROVAL;
+  const plan = useMemo(
+    () => (isPlan ? readPlanStructure(request.actionData) : null),
+    [isPlan, request.actionData],
+  );
 
   const [armed, setArmed] = useState(false);
   const [active, setActive] = useState<ActiveChoice>(null);
@@ -52,8 +95,8 @@ export function PermissionBubble({ item, onAnswer }: PermissionBubbleProps) {
 
   useEffect(() => {
     if (answered) return;
-    const t = window.setTimeout(() => setArmed(true), KEY_ARM_DELAY);
-    return () => window.clearTimeout(t);
+    const id = window.setTimeout(() => setArmed(true), KEY_ARM_DELAY);
+    return () => window.clearTimeout(id);
   }, [answered]);
 
   const commit = (granted: boolean, scope: PermissionScope, choice: ActiveChoice) => {
@@ -65,12 +108,32 @@ export function PermissionBubble({ item, onAnswer }: PermissionBubbleProps) {
     }, COMMIT_DELAY);
   };
 
-  // Enter = once；Cmd/Ctrl+Enter = always；Escape = deny。原版无 arm 延迟，
-  // 我们多 150ms 防侧栏刚打开时的误触；真正 commit 仍是 150ms flash。
+  // CZ: Enter=once, Cmd/Ctrl+Enter=always, Esc=deny
+  // eS: Enter=approve, Cmd/Ctrl+Enter or Esc=reject (official capture phase)
   useEffect(() => {
     if (answered || !armed) return;
 
     const onKey = (e: KeyboardEvent) => {
+      if (isPlan) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          commit(false, 'once', 'reject');
+          return;
+        }
+        if (e.key === 'Enter') {
+          if (e.isComposing || e.keyCode === 229) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.metaKey || e.ctrlKey) {
+            commit(false, 'once', 'reject');
+          } else {
+            commit(true, 'once', 'approve');
+          }
+        }
+        return;
+      }
+
       if (e.key === 'Escape') {
         e.preventDefault();
         commit(false, 'once', 'deny');
@@ -87,86 +150,252 @@ export function PermissionBubble({ item, onAnswer }: PermissionBubbleProps) {
       }
     };
 
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    // Official eS uses capture=true so composer doesn't eat Enter.
+    window.addEventListener('keydown', onKey, isPlan);
+    return () => window.removeEventListener('keydown', onKey, isPlan);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [answered, armed, canAlways, request.toolUseId]);
+  }, [answered, armed, canAlways, isPlan, request.toolUseId]);
+
+  // Official: answered permissionPrompt is cleared — no full card in the stream.
+  if (answered && compactAnswered && answer) {
+    return (
+      <div className="flex items-center gap-2 py-1 text-text-500">
+        {isPlan ? (
+          <ListChecks size={16} className="text-text-500 shrink-0" />
+        ) : (
+          <ShieldIcon size={16} className="text-text-500 shrink-0" />
+        )}
+        <AnsweredNote granted={answer.granted} scope={answer.scope} isPlan={isPlan} />
+      </div>
+    );
+  }
+
+  if (answered && answer) {
+    return (
+      <div className="bg-bg-000 rounded-[14px]">
+        <div className="flex items-center gap-2 py-[10px] px-4">
+          {isPlan ? (
+            <ListChecks size={20} className="text-text-100" />
+          ) : (
+            <ShieldIcon size={20} className="text-text-100" />
+          )}
+          <h3 className="font-base text-text-100">
+            {isPlan ? t.claudePlanTitle : t.permission}
+          </h3>
+        </div>
+        <div className="border-t border-border-300 mb-4" />
+        <div className="px-4 pb-3">
+          <AnsweredNote granted={answer.granted} scope={answer.scope} isPlan={isPlan} />
+        </div>
+      </div>
+    );
+  }
+
+  // ── Official eS plan card (NOT CZ) ──────────────────────────────────
+  if (isPlan && plan) {
+    const domains = plan.domains;
+    const approach = plan.approach;
+    return (
+      <div className="bg-bg-000 rounded-[14px]">
+        <div className="flex items-center justify-between py-[10px] px-4">
+          <div className="flex items-center gap-2">
+            <ListChecks size={20} className="text-text-100" />
+            <h3 className="font-base text-text-100">{t.claudePlanTitle}</h3>
+          </div>
+        </div>
+
+        <div className="border-t border-border-300" />
+
+        <div className="px-4 py-3 space-y-4 max-h-[40vh] overflow-y-auto">
+          {domains.length > 0 ? (
+            <div>
+              <p className="font-small text-text-400 mb-2">{t.planAllowSites}</p>
+              <div className="space-y-2">
+                {domains.map((entry, idx) => {
+                  const { name } = domainName(entry);
+                  return (
+                    <div key={`${name}-${idx}`} className="flex items-start gap-2">
+                      <span className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
+                        <Globe size={16} className="text-text-400" />
+                      </span>
+                      <span className="font-base text-text-100" dir="ltr">
+                        {name}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {approach.length > 0 ? (
+            <div>
+              <p className="font-small text-text-400 mb-2">{t.planApproach}</p>
+              <div className="space-y-2">
+                {approach.map((step, idx) => (
+                  <div key={idx} className="flex items-start gap-2">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full border-border-300 border-0.5 flex items-center justify-center text-xs text-text-400">
+                      {idx + 1}
+                    </span>
+                    <span className="font-base text-text-100" dir="ltr">
+                      {step}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="px-3 py-[10px] space-y-[5px] mt-[10px]">
+          <ScopeButton
+            isPrimary
+            isActive={active === 'approve'}
+            onClick={() => commit(true, 'once', 'approve')}
+          >
+            <span>{t.approvePlan}</span>
+            <ReturnKeyIcon className="text-text-500" />
+          </ScopeButton>
+          <ScopeButton
+            isActive={active === 'reject'}
+            onClick={() => commit(false, 'once', 'reject')}
+          >
+            <span>{t.makeChanges}</span>
+            <span className="flex items-center gap-0.5">
+              <MetaOrCtrlHint className="text-text-500" />
+              <ReturnKeyIcon className="text-text-500" />
+            </span>
+          </ScopeButton>
+          <p className="font-small text-text-500 pt-1 px-1">{t.planFooter}</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Official CZ site-permission card ────────────────────────────────
+  const isType = request.permission === PERMISSION.TYPE;
+  const isClick = request.permission === PERMISSION.CLICK;
+  const typeText =
+    isType && request.actionLabel && request.actionLabel !== request.host
+      ? request.actionLabel
+      : null;
 
   return (
     <div className="bg-bg-000 rounded-[14px]">
       <div className="flex items-center gap-2 py-[10px] px-4">
         <ShieldIcon size={20} className="text-text-100" />
-        <h3 className="font-base text-text-100">
-          {answered ? t.permission : t.newPermissionsRequired}
-        </h3>
+        <h3 className="font-base text-text-100">{t.newPermissionsRequired}</h3>
       </div>
 
       <div className="border-t border-border-300 mb-4" />
 
-      {/* 内容区：只放 "wants to" + host + 可选截图。Choices 在外面。 */}
       <div className="space-y-4 px-4">
         <div>
           <p className="font-base-bold text-text-100">
-            {isPlan
-              ? t.claudeWantsApproval
-              : t.claudeWantsTo(verbFor(request.permission, t))}
+            {t.claudeWantsTo(verbFor(request.permission, t))}
           </p>
           {request.host ? (
-            <p dir="ltr" className="font-claude-response-code text-text-200">
+            <p className="font-claude-response-code text-text-200" dir="ltr">
               {request.host}
-            </p>
-          ) : null}
-          {request.actionLabel && request.actionLabel !== request.host ? (
-            <p dir="ltr" className="font-claude-response-code text-text-300 mt-1 break-words">
-              {clip(request.actionLabel)}
             </p>
           ) : null}
         </div>
 
-        {request.screenshot && !answered ? (
+        {isType && typeText ? (
+          <div>
+            <p className="font-base-bold text-text-100 mb-2">{t.textToBeTyped}</p>
+            <div className="p-3 bg-bg-100 border border-border-200 rounded-lg max-h-[300px] overflow-y-auto">
+              <code
+                dir="ltr"
+                style={{ unicodeBidi: 'isolate' }}
+                className="font-claude-response-code text-text-200 whitespace-pre-wrap break-words overflow-wrap-anywhere"
+              >
+                {typeText}
+              </code>
+            </div>
+          </div>
+        ) : null}
+
+        {request.screenshot ? (
           <div>
             <img
               src={request.screenshot}
               alt="Preview of the page area this action targets"
-              className="mx-auto rounded-lg border-[0.5px] border-border-300"
+              className={cn(
+                'mx-auto rounded-lg border-[0.5px] border-border-300',
+                isClick && 'max-w-full',
+              )}
             />
           </div>
         ) : null}
       </div>
 
-      {answered ? (
-        <div className="px-4 pb-3">
-          <AnsweredNote granted={answer.granted} scope={answer.scope} />
-        </div>
-      ) : (
-        <Choices canAlways={canAlways} isPlan={isPlan} active={active} onPick={commit} />
-      )}
+      <Choices canAlways={canAlways} active={active} onPick={commit} />
     </div>
   );
 }
 
+/**
+ * Official sticky shell around active permission prompt:
+ *   absolute bottom-0 left-0 right-0 z-[10]
+ *   mx-auto max-w-3xl md:px-2
+ *   mx-3 md:mx-0 border border-border-300 rounded-[14px]
+ *     shadow-[0_4px_20px_0_rgba(0,0,0,0.04)] bg-bg-100
+ *   + bg-bg-100 h-3 spacer
+ */
+export function PermissionStickyShell({
+  children,
+  promptRef,
+  /** Official: pr-2 when messages scroller overflows (stable gutter alignment). */
+  scrollerOverflow = false,
+}: {
+  children: React.ReactNode;
+  promptRef?: React.Ref<HTMLDivElement>;
+  scrollerOverflow?: boolean;
+}) {
+  return (
+    <div
+      ref={promptRef}
+      className={cn(
+        'absolute bottom-0 left-0 right-0 z-[10]',
+        scrollerOverflow && 'pr-2',
+      )}
+    >
+      <div className="mx-auto max-w-3xl md:px-2">
+        <div className="mx-3 md:mx-0 border border-border-300 rounded-[14px] shadow-[0_4px_20px_0_rgba(0,0,0,0.04)] bg-bg-100">
+          {children}
+        </div>
+        <div className="bg-bg-100 h-3" />
+      </div>
+    </div>
+  );
+}
+
+/** Official CZ action choices (site permissions only — plan uses eS branch). */
 function Choices({
   canAlways,
-  isPlan,
   active,
   onPick,
 }: {
   canAlways: boolean;
-  isPlan: boolean;
   active: ActiveChoice;
   onPick: (granted: boolean, scope: PermissionScope, choice: ActiveChoice) => void;
 }) {
   const t = useUi();
   return (
+    // Official CZ: px-3 py-[10px] space-y-[5px] mt-[10px] mb-0.5
     <div className="px-3 py-[10px] space-y-[5px] mt-[10px] mb-0.5">
-      <ScopeButton isActive={active === 'once'} onClick={() => onPick(true, 'once', 'once')}>
-        <span>{isPlan ? t.approvePlan : t.allowOnce}</span>
-        <Kbd hint="↵" />
+      <ScopeButton
+        isActive={active === 'once'}
+        onClick={() => onPick(true, 'once', 'once')}
+      >
+        <span>{t.allowThisAction}</span>
+        <ReturnKeyIcon className="text-text-500" />
       </ScopeButton>
 
       <ScopeButton isActive={active === 'deny'} onClick={() => onPick(false, 'once', 'deny')}>
-        <span>{isPlan ? t.makeChanges : t.decline}</span>
-        <Kbd hint="Esc" />
+        <span>{t.decline}</span>
+        <EscKeyIcon className="text-text-500" />
       </ScopeButton>
 
       <div className="border-t-[0.5px] border-border-300 my-3 -mx-3" />
@@ -182,8 +411,8 @@ function Choices({
             <span className="font-small text-text-500">{t.browseClickType}</span>
           </div>
           <span className="flex items-center gap-0.5">
-            <Kbd hint="⌘" />
-            <Kbd hint="↵" />
+            <MetaOrCtrlHint className="text-text-500" />
+            <ReturnKeyIcon className="text-text-500" />
           </span>
         </ScopeButton>
       ) : (
@@ -191,7 +420,7 @@ function Choices({
       )}
 
       <p className="font-small text-text-500 px-1 mt-2">
-        {t.permissionFooter}{' '}
+        {t.permissionFooter}
         <button
           type="button"
           onClick={() => void chrome.runtime.openOptionsPage()}
@@ -199,59 +428,86 @@ function Choices({
         >
           {t.settingsLink}
         </button>
-        .
+        {t.permissionFooterAfter || null}
       </p>
     </div>
   );
 }
 
 /**
- * 原版 QC 按钮。
- * isActive 时用 bg-bg-300（键盘触发后 150ms 高亮），不是 primary 实心。
+ * Official QC (sidepanel-CEYFzMrx.js) — class string is template-literal exact:
+ *
+ *   w-full font-base flex min-w-[75px] px-[14px] py-[3px] justify-between
+ *   items-center gap-2 rounded-lg border-[0.5px] transition-colors font-medium
+ *   + isActive  → text-text-100 bg-bg-300 border-border-400
+ *   + isPrimary → bg-text-000 text-bg-000 border-text-000 hover:bg-text-100
+ *   + else      → text-text-100 border-border-200 hover:bg-bg-100
+ *   + height ? "" : "h-9"
+ *   style: height ? { height } : undefined
+ *
+ * Do not invent extra utilities (no shadow, no bg default, no type-specific sizes).
  */
 function ScopeButton({
   children,
-  isActive,
+  isActive = false,
+  isPrimary = false,
   height,
   onClick,
 }: {
   children: React.ReactNode;
   isActive?: boolean;
+  isPrimary?: boolean;
   height?: string | number;
   onClick: () => void;
 }) {
+  // Keep the same concatenation order as official QC so font-medium wins the
+  // same way against font-base in the authored class list.
+  const className = `w-full font-base flex min-w-[75px] px-[14px] py-[3px] justify-between items-center gap-2 rounded-lg border-[0.5px] transition-colors font-medium ${
+    isActive
+      ? 'text-text-100 bg-bg-300 border-border-400'
+      : isPrimary
+        ? 'bg-text-000 text-bg-000 border-text-000 hover:bg-text-100'
+        : 'text-text-100 border-border-200 hover:bg-bg-100'
+  } ${height ? '' : 'h-9'}`;
+
   return (
     <button
       type="button"
       onClick={onClick}
+      className={className}
       style={height ? { height } : undefined}
-      className={cn(
-        'w-full font-base flex min-w-[75px] px-[14px] py-[3px] justify-between items-center gap-2',
-        'rounded-lg border-[0.5px] transition-colors font-medium',
-        isActive
-          ? 'text-text-100 bg-bg-300 border-border-400'
-          : 'text-text-100 border-border-200 hover:bg-bg-100',
-        !height && 'h-9',
-      )}
     >
       {children}
     </button>
   );
 }
 
-function Kbd({ hint }: { hint: string }) {
-  return <span className="font-small shrink-0 text-[0.6875rem] text-text-500">{hint}</span>;
-}
-
-function AnsweredNote({ granted, scope }: { granted: boolean; scope: PermissionScope }) {
+function AnsweredNote({
+  granted,
+  scope,
+  isPlan,
+}: {
+  granted: boolean;
+  scope: PermissionScope;
+  isPlan?: boolean;
+}) {
   const t = useUi();
   return (
-    <p className={cn('font-small px-1 pb-1', granted ? 'text-text-500' : 'text-danger-100')}>
+    <p
+      className={cn(
+        'font-small min-w-0 truncate',
+        granted ? 'text-text-500' : 'text-danger-100',
+      )}
+    >
       {granted
-        ? scope === 'always'
-          ? t.allowedRemembered
-          : t.allowedOnce
-        : t.declined}
+        ? isPlan
+          ? t.planApproved
+          : scope === 'always'
+            ? t.allowedRemembered
+            : t.allowedOnce
+        : isPlan
+          ? t.planRejected
+          : t.declined}
     </p>
   );
 }
@@ -279,9 +535,4 @@ function verbFor(permission: string, t: ReturnType<typeof useUi>): string {
     default:
       return t.verbAct;
   }
-}
-
-function clip(s: string): string {
-  const flat = s.replace(/\s+/g, ' ').trim();
-  return flat.length <= LABEL_MAX ? flat : `${flat.slice(0, LABEL_MAX)}…`;
 }

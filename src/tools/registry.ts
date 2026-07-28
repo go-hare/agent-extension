@@ -25,7 +25,6 @@ import * as obs from '@/cdp/observers';
 import {
   buildTabContext,
   delay,
-  ensureAgentTabGrouped,
   formatTabs,
   getEffectiveTabId,
   getTab,
@@ -934,16 +933,14 @@ const tabsCreateTool: Tool = {
       });
       if (tab.id === undefined) return { error: 'Failed to create a tab.' };
 
-      // 当前 tab 已在用户分组 → 新 tab 跟进同组；否则收进 agent 自建组
-      // （不把用户原 tab 拽进 Agent 组）
+      // Official: only join an *existing* user tab group. Never create an
+      // "Agent" group of our own — ungrouped sessions stay ungrouped.
       if (cur.groupId !== undefined && cur.groupId !== -1) {
         try {
           await chrome.tabs.group({ tabIds: tab.id, groupId: cur.groupId });
         } catch {
           /* 分组失败无所谓 */
         }
-      } else {
-        await ensureAgentTabGrouped(tab.id);
       }
 
       openedByAgent.add(tab.id);

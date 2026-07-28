@@ -1,12 +1,17 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite';
 import { crx } from '@crxjs/vite-plugin';
 import { resolve } from 'node:path';
 import manifest from './manifest.config';
 
+/**
+ * Styles come from vendored Claude in Chrome 1.0.81 CSS
+ * (`src/styles/official-1.0.81.css`), not a local Tailwind rebuild.
+ * Do not re-add `@tailwindcss/vite` — it would regenerate utilities and
+ * diverge from the official class set the sidepanel classNames expect.
+ */
 export default defineConfig({
-  plugins: [react(), tailwindcss(), crx({ manifest })],
+  plugins: [react(), crx({ manifest })],
 
   /**
    * ⚠️ 关掉 Vite 的 publicDir，**故意的**，别改回来。

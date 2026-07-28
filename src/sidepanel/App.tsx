@@ -10,12 +10,16 @@
  *   3. 正常 EmptyState / transcript
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Composer, type SlashCommand } from './components/Composer';
 import { EmptyState } from './components/EmptyState';
 import { Header } from './components/Header';
 import { TodoList } from './components/TodoList';
 import { Transcript } from './components/Transcript';
+import {
+  PermissionBubble,
+  PermissionStickyShell,
+} from './components/PermissionBubble';
 import { BeforeYouStart } from './components/BeforeYouStart';
 import { PinOnboarding } from './components/PinOnboarding';
 import { ProductExplainer, type ExplainerKind } from './components/ProductExplainer';
@@ -32,6 +36,7 @@ import { UiLocaleProvider, useUi } from '@/i18n/UiLocaleContext';
 import { getUiStrings, type UiLocale } from '@/i18n/ui';
 import { loadOnboarding, patchOnboarding, type OnboardingFlags } from '@/onboarding/store';
 import { createSchedule } from '@/scheduling/store';
+import type { PermissionItem } from './state/transcript';
 
 export function App() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -180,6 +185,46 @@ function AppShell({
     ? t.waitingForPermission
     : t.working;
 
+  /**
+   * Official permission UX:
+   *   o.permissionPrompt → absolute bottom sticky overlay (z-10), NOT inline
+   *   messages paddingBottom = n>0 ? n-80 : 40
+   * Answered permission rows stay in the transcript as compact history.
+   */
+  const pendingPermission = useMemo((): PermissionItem | null => {
+    for (let i = session.items.length - 1; i >= 0; i -= 1) {
+      const it = session.items[i]!;
+      if (it.kind === 'permission' && it.answer === undefined) return it;
+    }
+    return null;
+  }, [session.items]);
+
+  const permissionPromptRef = useRef<HTMLDivElement>(null);
+  const [permissionPromptHeight, setPermissionPromptHeight] = useState(0);
+  /** Official sticky: pr-2 when messages scroller overflows. */
+  const [scrollerOverflow, setScrollerOverflow] = useState(false);
+
+  useLayoutEffect(() => {
+    if (!pendingPermission) {
+      setPermissionPromptHeight(0);
+      return;
+    }
+    const el = permissionPromptRef.current;
+    if (!el) return;
+
+    const measure = () => setPermissionPromptHeight(el.offsetHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [pendingPermission, pendingPermission?.id]);
+
+  // Official: paddingBottom: n>0 ? n-80+"px" : "40px"
+  const transcriptBottomPad =
+    permissionPromptHeight > 0
+      ? `${Math.max(0, permissionPromptHeight - 80)}px`
+      : '40px';
+
   const send = session.send;
   const openTeach = useCallback(() => setTeachPhase('intro'), []);
   const closeTeach = useCallback(() => setTeachPhase(null), []);
@@ -323,55 +368,82 @@ function AppShell({
 
       <TodoList items={todos} />
 
-      <Transcript
-        items={session.items}
-        onAnswer={session.answer}
-        running={session.running}
-        statusText={statusText}
-      >
-        {showPin ? (
-          <PinOnboarding onDismiss={dismissPin} />
-        ) : (
-          <EmptyState
-            configured={configured}
-            onPick={session.send}
-            onOpenOptions={openOptions}
-            onTeach={openTeach}
-          />
-        )}
-      </Transcript>
-
       {/*
-        Official sticky (sidepanel chatInput):
-          children: [TipTapEditor(composer + Hz3uf5n9Ga disclaimer), hairline h-0.5]
-        Working/status is NOT here — it lives in-transcript (StatusPill / DC).
-        No token usage row under the disclaimer.
+        Chat column is relative so the official permission sticky
+        (absolute bottom-0 z-[10]) sits above the composer, not the whole
+        sidepanel chrome.
       */}
-      <div className="sticky bottom-0 mx-auto w-full z-[5]">
-        <Composer
-          empty={empty}
+      <div className="relative flex-1 flex flex-col min-h-0">
+        <Transcript
+          items={session.items}
+          onAnswer={session.answer}
           running={session.running}
-          blocked={session.awaitingPermission}
-          permissionMode={settings.permissionMode}
-          onPermissionModeChange={onPermissionModeChange}
-          onSend={session.send}
-          onStop={session.stop}
-          commands={commands}
-          onTeach={openTeach}
-          tabUrl={session.tab?.url}
-          tabId={session.tab?.id}
-        />
-        <div className="flex justify-center py-1.5 text-text-500 bg-bg-100">
-          <a
-            href="https://support.anthropic.com/en/articles/8525154-claude-is-providing-incorrect-or-misleading-responses-what-s-going-on"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[11px] hover:text-text-300 transition-colors text-center px-3"
-          >
-            {t.aiDisclaimer}
-          </a>
+          statusText={statusText}
+          bottomPad={transcriptBottomPad}
+          stickyPermissionId={pendingPermission?.toolUseId ?? null}
+          onScrollerOverflow={setScrollerOverflow}
+        >
+          {showPin ? (
+            <PinOnboarding onDismiss={dismissPin} />
+          ) : (
+            <EmptyState
+              configured={configured}
+              onPick={session.send}
+              onOpenOptions={openOptions}
+              onTeach={openTeach}
+            />
+          )}
+        </Transcript>
+
+        {/*
+          Official sticky (sidepanel chatInput):
+            children: [TipTapEditor(composer + Hz3uf5n9Ga disclaimer), hairline h-0.5]
+          Working/status is NOT here — it lives in-transcript (StatusPill / DC).
+          No token usage row under the disclaimer.
+        */}
+        <div className="sticky bottom-0 mx-auto w-full z-[5]">
+          <Composer
+            empty={empty}
+            running={session.running}
+            blocked={session.awaitingPermission}
+            permissionMode={settings.permissionMode}
+            onPermissionModeChange={onPermissionModeChange}
+            onSend={session.send}
+            onStop={session.stop}
+            commands={commands}
+            onTeach={openTeach}
+            tabUrl={session.tab?.url}
+            tabId={session.tab?.id}
+          />
+          <div className="flex justify-center py-1.5 text-text-500 bg-bg-100">
+            <a
+              href="https://support.anthropic.com/en/articles/8525154-claude-is-providing-incorrect-or-misleading-responses-what-s-going-on"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[11px] hover:text-text-300 transition-colors text-center px-3"
+            >
+              {t.aiDisclaimer}
+            </a>
+          </div>
+          <div className="bg-bg-100 h-0.5" />
         </div>
-        <div className="bg-bg-100 h-0.5" />
+
+        {/*
+          Official permissionPrompt sticky overlay (z-10 above composer z-5):
+            absolute bottom-0 left-0 right-0 z-[10]
+            + border/shadow card + h-3 spacer
+        */}
+        {pendingPermission ? (
+          <PermissionStickyShell
+            promptRef={permissionPromptRef}
+            scrollerOverflow={scrollerOverflow}
+          >
+            <PermissionBubble
+              item={pendingPermission}
+              onAnswer={session.answer}
+            />
+          </PermissionStickyShell>
+        ) : null}
       </div>
 
       {explainer ? (

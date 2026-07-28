@@ -219,41 +219,8 @@ export function formatTabs(ctx: TabContext): string {
   return `${headerBits.join(' · ')}:\n${lines.join('\n')}`;
 }
 
-/** 本侧栏会话里 agent 自建的 tab group（不吞用户原 tab）。 */
-let agentGroupId: number | undefined;
-
-export function getAgentGroupId(): number | undefined {
-  return agentGroupId;
-}
-
-export function resetAgentGroup(): void {
-  agentGroupId = undefined;
-}
-
-/**
- * 把 agent 新开的 tab 放进 "Agent" 分组。
- * - 当前 tab 已在用户分组 → 跟用户分组（调用方处理）
- * - 否则只把 agent 开的 tab 收进独立 Agent 组，不挪用户原 tab
- */
-export async function ensureAgentTabGrouped(newTabId: number): Promise<void> {
-  try {
-    if (agentGroupId !== undefined) {
-      await chrome.tabs.group({ tabIds: newTabId, groupId: agentGroupId });
-      return;
-    }
-    const groupId = await chrome.tabs.group({ tabIds: newTabId });
-    agentGroupId = groupId;
-    try {
-      await chrome.tabGroups.update(groupId, { title: 'Agent', color: 'purple' });
-    } catch {
-      /* title 可选 */
-    }
-  } catch {
-    /* 分组失败不阻断建 tab */
-  }
-}
-
 // ───────────────────── content script 通信 ─────────────────────
+
 
 /**
  * 给 content script 发消息，必要时先补注入。

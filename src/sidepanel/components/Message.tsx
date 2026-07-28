@@ -16,7 +16,7 @@
 import { useState } from 'react';
 import { cn } from './cn';
 import { Markdown } from './Markdown';
-import { CaretDown, CaretUp } from './icons';
+import { CaretDown } from './icons';
 import type { AssistantTextItem, UserItem } from '../state/transcript';
 
 /** 原版用的就是 500。 */
@@ -27,42 +27,55 @@ export function UserMessage({ item }: { item: UserItem }) {
   const long = item.text.length > COLLAPSE_AT;
 
   return (
+    // Official HumanMessage (no attachments path):
+    //   group flex justify-end
+    //     flex flex-col items-end max-w-[85%] min-w-0
+    //       relative inline-flex flex-col break-words max-w-full
+    //         px-4 py-3 bg-bg-300 rounded-[14px]   ← bubble on THIS wrapper
+    //         relative transition-all …
+    //           font-base  (plain text; no extra text-sm)
     <div className="group flex justify-end">
-      <div className="relative inline-flex flex-col break-words max-w-full">
-        <div
-          className={cn(
-            'relative transition-all duration-300 ease-in-out',
-            'ml-auto px-4 py-3 bg-bg-300 rounded-[14px]',
-            long && !expanded && 'max-h-[300px] overflow-hidden',
-            long && expanded && 'max-h-[50000px] overflow-hidden',
-          )}
-        >
-          {/*
-            whitespace-pre-wrap：用户输入的换行是有意义的，不能被 HTML 折叠掉。
-            这里**不过 Markdown** —— 用户没要求渲染，而且渲染自己的输入
-            会让 `*` `_` 这类字符神秘消失。原版同样只用 font-base 直出。
-          */}
-          <div className="font-base whitespace-pre-wrap text-sm text-text-100">{item.text}</div>
+      <div className="relative flex flex-col items-end max-w-[85%] min-w-0">
+        <div className="relative inline-flex flex-col break-words max-w-full px-4 py-3 bg-bg-300 rounded-[14px]">
+          <div
+            className={cn(
+              'relative transition-all duration-300 ease-in-out',
+              long && !expanded && 'max-h-[300px] overflow-hidden',
+              long && expanded && 'max-h-[50000px] overflow-hidden',
+            )}
+          >
+            {/*
+              whitespace-pre-wrap：用户输入的换行是有意义的，不能被 HTML 折叠掉。
+              官方 plain 路径是 font-base 直出（不过 Markdown）。
+            */}
+            <div className="font-base whitespace-pre-wrap text-text-100">
+              {item.text}
+            </div>
 
-          {long && !expanded ? (
-            <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-bg-300 to-transparent pointer-events-none transition-opacity duration-300" />
+            {long && !expanded ? (
+              <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-bg-300 to-transparent pointer-events-none transition-opacity duration-300" />
+            ) : null}
+          </div>
+
+          {long ? (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              aria-label={expanded ? 'Collapse message' : 'Expand message'}
+              className="absolute bottom-0.5 right-0 p-1.5 bg-bg-500 hover:bg-bg-200 rounded-full transition-colors border-[0.5px] border-[hsl(var(--border-400)/0.5)] opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto"
+            >
+              {/* Official: single CaretDown, text-text-300, rotate-180 when expanded */}
+              <span
+                className={cn(
+                  'inline-flex transition-transform',
+                  expanded && 'rotate-180',
+                )}
+              >
+                <CaretDown size={12} className="text-text-300" />
+              </span>
+            </button>
           ) : null}
         </div>
-
-        {long ? (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            aria-label={expanded ? 'Collapse message' : 'Expand message'}
-            className="absolute bottom-0.5 right-0 p-1.5 bg-bg-500 hover:bg-bg-200 rounded-full transition-colors border-[0.5px] border-[hsl(var(--border-400)/0.5)] opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto"
-          >
-            {expanded ? (
-              <CaretUp size={12} className="text-text-200" />
-            ) : (
-              <CaretDown size={12} className="text-text-200" />
-            )}
-          </button>
-        ) : null}
       </div>
     </div>
   );
@@ -74,10 +87,10 @@ export function AssistantMessage({ item }: { item: AssistantTextItem }) {
       <div className="max-w-4xl claude-response w-full break-words">
         <div className="font-claude-response text-sm leading-[1.65rem] text-text-100 [&_a]:!underline [&_a]:text-brand-100 [&_p]:!text-sm [&_p]:text-text-100 [&_ul]:text-sm [&_ol]:text-sm">
           <Markdown text={item.text} />
-          {/* 流式光标。inline-block + 固定尺寸，避免行高抖动。 */}
-          {item.streaming ? (
-            <span className="ml-0.5 inline-block h-[0.9em] w-[2px] translate-y-[0.1em] animate-pulse bg-text-300 align-middle" />
-          ) : null}
+          {/*
+            Official assistant stream has no pulse caret bar — text just grows.
+            (StatusPill spark + tool shimmer carry the "still working" signal.)
+          */}
         </div>
       </div>
     </div>

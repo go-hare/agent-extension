@@ -44,6 +44,24 @@ export interface TranscriptProps {
   running?: boolean;
   /** 覆盖 Working 文案（如 Waiting for permission）。 */
   statusText?: string;
+  /**
+   * Official messages paddingBottom:
+   *   permissionPromptHeight > 0 ? `${n - 80}px` : '40px'
+   * Active permission is sticky overlay — not inline — so the scroller
+   * reserves space so the last message is not hidden under it.
+   */
+  bottomPad?: string | number;
+  /**
+   * toolUseId of the unanswered permission currently shown in the sticky
+   * shell. That item is omitted from the inline stream (official keeps
+   * permissionPrompt out of the message list).
+   */
+  stickyPermissionId?: string | null;
+  /**
+   * Official sticky shell gets `pr-2` when the messages scroller overflows
+   * (stable gutter alignment with scrollbar-gutter:stable).
+   */
+  onScrollerOverflow?: (overflowing: boolean) => void;
   children?: React.ReactNode;
 }
 
@@ -52,6 +70,9 @@ export function Transcript({
   onAnswer,
   running = false,
   statusText,
+  bottomPad = '40px',
+  stickyPermissionId = null,
+  onScrollerOverflow,
   children,
 }: TranscriptProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -73,6 +94,26 @@ export function Transcript({
     return () => el.removeEventListener('scroll', onScroll);
   }, []);
 
+  // Official: permission sticky pr-2 when scroller content overflows.
+  useLayoutEffect(() => {
+    const el = scrollerRef.current;
+    if (!el || !onScrollerOverflow) return;
+
+    const measure = () => {
+      onScrollerOverflow(el.scrollHeight > el.clientHeight + 1);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    // Also re-check when children grow (scrollHeight changes without resize).
+    const mo = new MutationObserver(measure);
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
+  }, [onScrollerOverflow, items, running, bottomPad]);
+
   // useLayoutEffect 而不是 useEffect：要在浏览器绘制**之前**滚到位，
   // 否则每个流式 delta 都会先画出"内容超出底部"的一帧再跳回去，肉眼可见地抖。
   useLayoutEffect(() => {
@@ -80,15 +121,31 @@ export function Transcript({
     const el = scrollerRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [items, running, statusText]);
+  }, [items, running, statusText, bottomPad]);
 
   const empty = items.length === 0;
+
+  // Unanswered sticky permission is rendered by App — drop it from the stream.
+  const visibleItems = useMemo(() => {
+    if (!stickyPermissionId) return items;
+    return items.filter(
+      (it) =>
+        !(
+          it.kind === 'permission' &&
+          it.answer === undefined &&
+          (it.toolUseId === stickyPermissionId || it.id === stickyPermissionId)
+        ),
+    );
+  }, [items, stickyPermissionId]);
 
   /**
    * 当前 turn = 最后一条 user 之后的 items。
    * 官方把这一段收成 DC（StatusPill + timeline tools + final text）。
    */
-  const { beforeTurn, turnItems } = useMemo(() => splitActiveTurn(items), [items]);
+  const { beforeTurn, turnItems } = useMemo(
+    () => splitActiveTurn(visibleItems),
+    [visibleItems],
+  );
 
   const turnTools = useMemo(
     () => turnItems.filter((it): it is ToolItem => it.kind === 'tool'),
@@ -98,17 +155,31 @@ export function Transcript({
   const turnIsStreaming = running || turnHasRunningTool;
   const workingLabel = statusText?.trim() || t.working;
 
+  const padStyle = useMemo(() => {
+    const pb =
+      typeof bottomPad === 'number' ? `${bottomPad}px` : bottomPad || '40px';
+    return { paddingBottom: pb } as React.CSSProperties;
+  }, [bottomPad]);
+
   return (
     <div
       ref={scrollerRef}
-      className={cn('flex-1 overflow-y-auto', empty && '!overflow-hidden')}
+      // Official AutoScroll scroller:
+      //   overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]
+      className={cn(
+        'flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]',
+        empty && '!overflow-hidden',
+      )}
     >
       <div className="h-full">
         <div className="mx-auto flex size-full max-w-3xl flex-col md:px-2">
           {empty ? (
             children
           ) : (
-            <div className="flex-1 flex flex-col px-4 max-w-3xl mx-auto w-full pt-1">
+            <div
+              className="flex-1 flex flex-col px-4 max-w-3xl mx-auto w-full pt-1"
+              style={padStyle}
+            >
               {renderRows(beforeTurn, onAnswer, { running: false })}
               {turnItems.length > 0 || turnIsStreaming ? (
                 <AssistantTurn
@@ -119,8 +190,6 @@ export function Transcript({
                   tools={turnTools}
                 />
               ) : null}
-              {/* 底部留白：让最后一条消息不会紧贴输入框。 */}
-              <div className="h-4 shrink-0" />
             </div>
           )}
         </div>
@@ -153,6 +222,12 @@ function splitActiveTurn(items: TranscriptItem[]): {
 /**
  * 官方 NM/DC：当前 turn 的 tool timeline + StatusPill + 收尾文本。
  * toolTransition fadeOnStatus：进行中 pill = Working；结束后 = N steps。
+ *
+ * 关键：官方 permissionPrompt 不在 message 流里打断 tool 块。
+ * 我们若把 answered chip 夹在 tool 之间，会把 timeline 拆成多段，
+ * 非最后一段还会带 border（截图里的 Read page / Navigate 两张卡）。
+ * 因此 turn 内 **所有 tool 合成一条 borderless TimelineGroup**；
+ * permission chip / 文本按「首 tool 前 / 末 tool 后」落位。
  */
 function AssistantTurn({
   items,
@@ -179,136 +254,138 @@ function AssistantTurn({
     if (isStreaming) setExpanded(false);
   }, [isStreaming]);
 
+  // Official DC: Working while streaming; else "{count} steps" over ALL tools
+  // in the turn (vAKAnIbJ4M), including 1 → "1 step" / "1 步".
   const pillLabel = isStreaming
     ? workingLabel
     : toolCount === 0
       ? workingLabel
       : toolCount === 1
-        ? t.stepOne
-        : t.stepsCount(toolCount);
+        ? t.stepsOne
+        : t.stepsMany(toolCount);
 
   // 无工具且未在跑：只渲染 turn 内非 tool 行（纯文本回复）。
   if (!hasTools && !isStreaming) {
     return <>{renderRows(items, onAnswer, { running: false })}</>;
   }
 
-  // 把 turn 拆成：前置文本 / 工具块（可多段，被 permission 打断）/ 后置文本
-  const segments = segmentTurn(items);
+  const { before, after } = splitTurnAroundTools(items);
+
+  // Official DC (fadeOnStatus + trailing caret):
+  //  - StatusPill isExpanded = user toggle only (NOT auto while working)
+  //  - StatusPill children = full TimelineGroup only when expanded
+  //  - Live tool tail while Working is a SIBLING below the pill
+  //    (row-start-2 in official grid), never forced into the expand grid
+  const expandedBody = expanded ? (
+    <TimelineGroup
+      tools={tools}
+      forceExpanded
+      borderless
+      showDone={turnIsOver}
+    />
+  ) : null;
+
+  const liveSibling =
+    isStreaming && !expanded && hasTools ? (
+      <TimelineGroup
+        tools={tools}
+        forceExpanded
+        borderless
+        liveTailOnly
+      />
+    ) : null;
 
   return (
     <div className="min-w-0">
-      {segments.map((seg, idx) => {
-        if (seg.kind === 'rows') {
-          return (
-            <div key={`seg_rows_${idx}`}>
-              {seg.items.map((item) => (
-                <Row key={item.id} item={item} onAnswer={onAnswer} />
-              ))}
+      {before.map((item) => (
+        <Row key={item.id} item={item} onAnswer={onAnswer} />
+      ))}
+
+      {hasTools || isStreaming ? (
+        <div className="min-w-0">
+          <div className="grid grid-rows-[auto_auto] min-w-0">
+            <div className="row-start-1 col-start-1 min-w-0">
+              <StatusPill
+                isWorking={isStreaming}
+                statusText={pillLabel}
+                isExpanded={expanded}
+                onToggle={
+                  hasTools || isStreaming
+                    ? () => setExpanded((v) => !v)
+                    : undefined
+                }
+                showSpark={isStreaming}
+              >
+                {expandedBody}
+              </StatusPill>
             </div>
-          );
-        }
-
-        // tool segment — only the last tool segment gets the live StatusPill chrome
-        const isLastToolSeg = !segments.slice(idx + 1).some((s) => s.kind === 'tools');
-        if (!isLastToolSeg) {
-          return (
-            <TimelineGroup
-              key={`seg_tools_${idx}`}
-              tools={seg.tools}
-              forceExpanded
-              borderless={false}
-            />
-          );
-        }
-
-        // Official StatusPill: timeline body only while expanded, OR live tail
-        // while Working (fadeOnStatus). After turn ends, collapse to "N steps".
-        let body: React.ReactNode = null;
-        if (expanded) {
-          body = (
-            <TimelineGroup
-              tools={seg.tools}
-              forceExpanded
-              borderless
-              showDone={turnIsOver}
-            />
-          );
-        } else if (isStreaming) {
-          body = (
-            <TimelineGroup
-              tools={seg.tools}
-              forceExpanded
-              borderless
-              liveTailOnly
-            />
-          );
-        }
-
-        return (
-          <div key={`seg_tools_${idx}`} className="min-w-0">
-            <StatusPill
-              isWorking={isStreaming}
-              statusText={pillLabel}
-              isExpanded={expanded}
-              onToggle={
-                hasTools || isStreaming
-                  ? () => setExpanded((v) => !v)
-                  : undefined
-              }
-              showSpark={isStreaming}
-            >
-              {body}
-            </StatusPill>
+            {liveSibling ? (
+              <div className="row-start-2 col-start-1 relative min-w-0">
+                {liveSibling}
+              </div>
+            ) : null}
           </div>
-        );
-      })}
-
-      {/* 还在跑、但尚未产生任何 tool/text：单独一颗 Working pill */}
-      {isStreaming && items.length === 0 ? (
-        <StatusPill
-          isWorking
-          statusText={workingLabel}
-          isExpanded={false}
-          showSpark
-        />
+        </div>
       ) : null}
+
+      {after.map((item) => (
+        <Row key={item.id} item={item} onAnswer={onAnswer} />
+      ))}
+
+      {/*
+        Empty streaming turn (no tools/text yet) is already covered by the
+        StatusPill above when `isStreaming` — do NOT mount a second pill
+        (screenshot: two "处理中" rows).
+      */}
     </div>
   );
 }
 
-type TurnSegment =
-  | { kind: 'rows'; items: TranscriptItem[] }
-  | { kind: 'tools'; tools: ToolItem[] };
-
-function segmentTurn(items: TranscriptItem[]): TurnSegment[] {
-  const out: TurnSegment[] = [];
-  let i = 0;
-  while (i < items.length) {
-    const item = items[i]!;
-    if (item.kind === 'tool') {
-      const tools: ToolItem[] = [];
-      while (i < items.length && items[i]!.kind === 'tool') {
-        tools.push(items[i]! as ToolItem);
-        i += 1;
-      }
-      out.push({ kind: 'tools', tools });
-      continue;
+/**
+ * Split turn items around the tool block without letting permission chips
+ * (or other non-tools) fracture the timeline into multiple bordered groups.
+ * Tools themselves are taken from the `tools` prop; here we only place
+ * non-tool rows before the first tool / after the last tool.
+ */
+function splitTurnAroundTools(items: TranscriptItem[]): {
+  before: TranscriptItem[];
+  after: TranscriptItem[];
+} {
+  let firstTool = -1;
+  let lastTool = -1;
+  for (let i = 0; i < items.length; i += 1) {
+    if (items[i]!.kind === 'tool') {
+      if (firstTool < 0) firstTool = i;
+      lastTool = i;
     }
-    const rows: TranscriptItem[] = [];
-    while (i < items.length && items[i]!.kind !== 'tool') {
-      rows.push(items[i]!);
-      i += 1;
-    }
-    out.push({ kind: 'rows', items: rows });
   }
-  return out;
+  if (firstTool < 0) {
+    return { before: items.filter((it) => it.kind !== 'tool'), after: [] };
+  }
+  const before: TranscriptItem[] = [];
+  const after: TranscriptItem[] = [];
+  for (let i = 0; i < items.length; i += 1) {
+    const it = items[i]!;
+    if (it.kind === 'tool') continue;
+    if (i < firstTool) before.push(it);
+    else if (i > lastTool) after.push(it);
+    else {
+      // Answered permission (or notice) that sat between tools — keep after
+      // the continuous timeline so it does not split the rail.
+      after.push(it);
+    }
+  }
+  return { before, after };
 }
 
 /**
  * 官方 StatusPill（zC in sidepanel-CEYFzMrx.js）逐字 class：
  *   button: group/status flex items-center gap-2 py-1 text-sm …
  *   spark slot: h-5 w-5, li state=writing className="!w-5 !text-brand-200"
- *   text: qi shimmer (shimmertext 2.25s) while isWorking
+ *   text: qi shimmer + textClassName default "font-base"
+ *   trailing caret: ALWAYS -rotate-90; opacity-0 → group-hover opacity-100
+ *   gridTemplateRows: isExpanded ? 1fr : 0fr  (NOT isWorking)
+ *   children kept mounted while expanded OR until 300ms collapse delay ends
  */
 function StatusPill({
   isWorking,
@@ -329,6 +406,18 @@ function StatusPill({
   // Official: I = showSpark && isWorking → spark width 20px
   const spark = showSpark && isWorking;
 
+  // Official: E = delayed hide flag; A = M || !E → keep children during collapse anim
+  const [hideChildren, setHideChildren] = useState(!isExpanded);
+  useEffect(() => {
+    if (isExpanded) {
+      setHideChildren(false);
+      return;
+    }
+    const t = window.setTimeout(() => setHideChildren(true), 300);
+    return () => window.clearTimeout(t);
+  }, [isExpanded]);
+  const showBody = isExpanded || !hideChildren;
+
   return (
     <div className="min-w-0 pb-1">
       <div className="flex items-center gap-2">
@@ -338,8 +427,9 @@ function StatusPill({
           disabled={!interactive}
           aria-expanded={interactive ? isExpanded : undefined}
           className={cn(
-            // Official O= group/status … cursor-pointer text-left (+ flex-1 min-w-0 on button)
-            'group/status flex items-center gap-2 py-1 text-sm transition-colors cursor-pointer text-left min-w-0 flex-1',
+            // Official O (zC): group/status flex items-center gap-2 py-1 text-sm …
+            // + flex-1 min-w-0 on the button when no inline action
+            'group/status flex items-center gap-2 py-1 text-sm transition-colors cursor-pointer text-left flex-1 min-w-0',
             !interactive && 'cursor-default',
             spark
               ? 'text-text-300 hover:text-text-200'
@@ -361,34 +451,40 @@ function StatusPill({
                 spark ? 'opacity-100 delay-150' : 'opacity-0',
               )}
             >
-              {/* Official li writing: !w-5 !text-brand-200 + 8-frame sprite */}
-              <ClaudeSpark state={spark ? 'writing' : 'static'} className="!w-5" />
+              {/* Official li: state=writing className="!w-5 !text-brand-200" */}
+              <ClaudeSpark
+                state={spark ? 'writing' : 'static'}
+                className="!w-5 !text-brand-200"
+              />
             </div>
           </div>
 
-          <span className="inline-flex items-center gap-1 min-w-0">
+          {/*
+            Official L fragment: status text + trailing caret are SIBLINGS
+            inside inline-flex gap-1 (caret is NOT nested inside the text span).
+            Working → qi shimmer with text-left truncate + font-base.
+          */}
+          <div className="inline-flex items-center gap-1 min-w-0">
             {isWorking ? (
-              // Official qi: gradient shimmer + text-left truncate (StatusPill passes r)
-              <span className="shimmertext text-left truncate">{statusText}</span>
+              <span className="shimmertext font-base text-left truncate">
+                {statusText}
+              </span>
             ) : (
-              <span className="truncate">{statusText}</span>
+              <span className="font-base truncate">{statusText}</span>
             )}
             {interactive ? (
+              // Official trailing caret: always -rotate-90; opacity only on hover
               <span
                 className={cn(
-                  // Official trailing caret: collapsed -rotate-90, expanded rotate-0
-                  'inline-flex shrink-0 transition-opacity duration-200',
+                  'inline-flex -rotate-90 shrink-0 opacity-0 transition-opacity duration-200',
                   'group-hover/status:opacity-100 group-focus-visible/status:opacity-100',
-                  isExpanded
-                    ? 'rotate-0 opacity-100'
-                    : '-rotate-90 opacity-0',
                   isWorking && 'text-text-400',
                 )}
               >
                 <CaretDown size={12} />
               </span>
             ) : null}
-          </span>
+          </div>
         </button>
       </div>
 
@@ -397,13 +493,21 @@ function StatusPill({
         {statusText}
       </span>
 
-      {/* Official: grid 0fr/1fr expand for children */}
+      {/*
+        Official expand:
+          gridTemplateRows: M ? "1fr" : "0fr"
+          children: A ? b : null   (A = expanded || !delayedHide)
+        Live tool tail is rendered OUTSIDE this grid by AssistantTurn when
+        streaming + collapsed — StatusPill itself only expands on isExpanded.
+      */}
       {children ? (
         <div
           className="grid transition-[grid-template-rows] duration-300 ease-out"
-          style={{ gridTemplateRows: isExpanded || isWorking ? '1fr' : '0fr' }}
+          style={{ gridTemplateRows: isExpanded ? '1fr' : '0fr' }}
         >
-          <div className="overflow-hidden min-w-0">{children}</div>
+          <div className="overflow-hidden min-w-0">
+            {showBody ? children : null}
+          </div>
         </div>
       ) : null}
     </div>
@@ -411,8 +515,11 @@ function StatusPill({
 }
 
 /**
- * 把连续 tool 行收成 TimelineGroup；其它 kind 原样渲染。
- * 权限气泡永远打断分组 —— 那是用户必须看到的。
+ * 把连续 tool 行收成 **一条** TimelineGroup（官方 NM/DC）。
+ *
+ * 已答 permission 只是一行 chip，**不打断**工具时间轴——否则每个 tool
+ * 会各自变成带边框的独立卡（用户截图里的 Read page / Navigate 两张卡）。
+ * 未答 permission 已被 sticky 层滤掉，不会进这里。
  */
 function renderRows(
   items: TranscriptItem[],
@@ -424,16 +531,37 @@ function renderRows(
   while (i < items.length) {
     const item = items[i]!;
 
-    if (item.kind === 'tool') {
+    if (item.kind === 'tool' || item.kind === 'permission') {
+      // Gather a run of tools + answered permission chips; one timeline for tools.
       const start = i;
-      const tools: TranscriptItem[] = [];
-      while (i < items.length && items[i]!.kind === 'tool') {
-        tools.push(items[i]!);
-        i += 1;
+      const tools: ToolItem[] = [];
+      const chips: TranscriptItem[] = [];
+      while (i < items.length) {
+        const cur = items[i]!;
+        if (cur.kind === 'tool') {
+          tools.push(cur);
+          i += 1;
+          continue;
+        }
+        if (cur.kind === 'permission') {
+          chips.push(cur);
+          i += 1;
+          continue;
+        }
+        break;
       }
-      out.push(
-        <TimelineGroup key={`tg_${items[start]!.id}`} tools={tools as ToolItem[]} />,
-      );
+      if (tools.length > 0) {
+        out.push(
+          <TimelineGroup
+            key={`tg_${items[start]!.id}`}
+            tools={tools}
+            borderless
+          />,
+        );
+      }
+      for (const chip of chips) {
+        out.push(<Row key={chip.id} item={chip} onAnswer={onAnswer} />);
+      }
       continue;
     }
 
@@ -475,16 +603,22 @@ function TimelineGroup({
   const showHeader = collapsible && collapsedCount > 0 && !borderless;
   const open = forceExpanded || expanded;
 
+  /**
+   * Official DC fadeOnStatus live sibling (`se = e.slice(Q)`):
+   *   Q snaps only when statusText changes mid-turn; otherwise Q stays 0
+   *   → growing full tool list under Working, not "only the running row".
+   * We mirror that: liveTailOnly renders the full segment (growing tail).
+   * Collapse mode (non-live) still hides all but the last ALWAYS_VISIBLE_TAIL.
+   */
   let visible = tools;
   if (liveTailOnly && total > 0) {
-    const runningIdx = tools.map((x) => x.status).lastIndexOf('running');
-    const start = runningIdx >= 0 ? runningIdx : Math.max(0, total - 1);
-    visible = tools.slice(start);
+    visible = tools;
   } else if (collapsible && !open) {
     visible = tools.slice(Math.max(0, total - ALWAYS_VISIBLE_TAIL));
   }
 
-  const doneLabel = t.teachDone || 'Done';
+  // Official Done row (JXdbo8Vnlw) — not teachDone.
+  const doneLabel = t.done;
 
   return (
     <div
@@ -540,13 +674,14 @@ function TimelineGroup({
       ))}
 
       {showDone ? (
-        // Official Done: Gi + Lt check + "Done" pl-2.5 pt-0.5 text-text-300
+        // Official Done: Gi + Lt check + "Done" pl-2.5 pt-0.5 text-text-300 !font-base
+        // (no extra text-sm — !font-base already sets 0.875rem)
         <TimelineGroupItem
           icon={<CheckIcon size={16} className="text-text-500" />}
           header={
             <div
               data-timeline-text=""
-              className="pl-2.5 pt-0.5 text-text-300 !font-base text-sm"
+              className="pl-2.5 pt-0.5 text-text-300 !font-base"
             >
               {doneLabel}
             </div>
@@ -570,24 +705,26 @@ function Row({
 }) {
   switch (item.kind) {
     case 'user':
-      return (
-        <div className="mt-4 mb-1">
-          <UserMessage item={item} />
-        </div>
-      );
+      // Official user blocks sit directly in the column — no invent-ed mt-4 wrapper.
+      return <UserMessage item={item} />;
 
     case 'text':
-      return (
-        <div className="mt-2 mb-1">
-          <AssistantMessage item={item} />
-        </div>
-      );
+      // Official assistant text follows tools with StatusPill spacing, not mt-2.
+      return <AssistantMessage item={item} />;
 
     case 'tool':
       return <ToolCall item={item} />;
 
     case 'permission':
-      return <PermissionBubble item={item} onAnswer={onAnswer} />;
+      // Official: unanswered lives in sticky shell (filtered out of stream).
+      // Answered permissionPrompt is cleared — only a one-line history chip.
+      return (
+        <PermissionBubble
+          item={item}
+          onAnswer={onAnswer}
+          compactAnswered
+        />
+      );
 
     case 'notice':
       return <Notice level={item.level} text={item.text} />;
