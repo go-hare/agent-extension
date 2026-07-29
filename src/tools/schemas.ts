@@ -486,24 +486,45 @@ export const tabsContextMcpSchema: AnthropicToolSchema = {
     'group if it exists. CRITICAL: You must get the context at least once before using other ' +
     'browser automation tools so you know what tabs exist. Each new conversation should create ' +
     'its own new tab (using tabs_create_mcp) rather than reusing existing tabs, unless the user ' +
-    'explicitly asks to use an existing tab.',
+    'explicitly asks to use an existing tab. When createIfEmpty is omitted over MCP, the bridge ' +
+    'defaults it to true (Claude Code parity).',
   input_schema: {
     type: 'object',
     properties: {
       createIfEmpty: {
         type: 'boolean',
         description:
-          'Creates a new MCP tab group if none exists (new focused window + yellow "Claude (MCP)" group).',
+          'Creates a new MCP tab group if none exists (new focused window + yellow "Claude (MCP)" group). ' +
+          'Defaults to true on the MCP bridge when omitted.',
       },
     },
     required: [],
   },
 };
 
+export const tabsCreateMcpInput = z.object({
+  /** Optional https(s) URL to open; omit / empty → chrome://newtab. */
+  url: z.string().optional(),
+});
+
 export const tabsCreateMcpSchema: AnthropicToolSchema = {
   name: 'tabs_create_mcp',
-  description: 'Creates a new empty tab in the MCP tab group.',
-  input_schema: { type: 'object', properties: {}, required: [] },
+  description:
+    'Creates a new tab in the MCP tab group. Optional `url` opens that page ' +
+    '(http/https only). Omit url (or leave empty) for chrome://newtab.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      url: {
+        type: 'string',
+        description:
+          'Optional URL to open in the new tab (http:// or https://). ' +
+          'Protocol may be omitted (defaults to https://). ' +
+          'If omitted, creates chrome://newtab. javascript:/chrome:/file: are rejected.',
+      },
+    },
+    required: [],
+  },
 };
 
 export const tabsCloseMcpInput = z.object({ tabId: z.number() });
@@ -682,18 +703,58 @@ export const resizeWindowSchema: AnthropicToolSchema = {
 
 // ───────────────────────────── update_plan ─────────────────────────────
 
-export const updatePlanInput = z.object({
-  domains: z.array(z.string()),
-  approach: z.array(z.string()),
-});
+/**
+ * Densable / official: domains[] + approach[].
+ * Claude Code sometimes sends a single `plan` string (or only plan) — accept
+ * and normalize so CLI callers don't hard-fail on Required domains.
+ */
+export const updatePlanInput = z
+  .object({
+    domains: z.array(z.string()).optional(),
+    approach: z.array(z.string()).optional(),
+    /** CLI / informal: free-text plan body (mapped into approach). */
+    plan: z.union([z.string(), z.array(z.string())]).optional(),
+  })
+  .transform((v) => {
+    const domains = Array.isArray(v.domains) ? v.domains.filter(Boolean) : [];
+    let approach = Array.isArray(v.approach) ? v.approach.filter(Boolean) : [];
+    if (approach.length === 0 && v.plan != null) {
+      if (Array.isArray(v.plan)) {
+        approach = v.plan.map(String).map((s) => s.trim()).filter(Boolean);
+      } else {
+        const text = String(v.plan).trim();
+        if (text) {
+          // Split multi-line / numbered bullets into steps when possible.
+          const lines = text
+            .split(/\n+/)
+            .map((s) => s.replace(/^\s*[-*•\d.)]+\s*/, '').trim())
+            .filter(Boolean);
+          approach = lines.length > 1 ? lines : [text];
+        }
+      }
+    }
+    return { domains, approach };
+  })
+  .superRefine((v, ctx) => {
+    if (v.approach.length === 0 && v.domains.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['approach'],
+        message:
+          'Provide approach[] (or plan string) and/or domains[]. Official densable shape: ' +
+          '{ domains: string[], approach: string[] }. CLI may also pass { plan: "…" }.',
+      });
+    }
+  });
 
 export const updatePlanSchema: AnthropicToolSchema = {
   name: 'update_plan',
   description:
-    'Update the plan and present it to the user for approval before proceeding. ' +
-    'In Ask-before-acting mode this must be called (and approved) before any other tool. ' +
-    'After approval, ordinary actions on the listed domains can proceed for this turn; ' +
-    'irreversible actions, JavaScript, and uploads still require separate confirmation.',
+    'Present a plan for user approval before acting. Official densable fields: ' +
+    '`domains` (sites you will visit) + `approach` (ordered high-level steps). ' +
+    'Also accepts a free-text `plan` string (Claude Code / informal callers) which is ' +
+    'normalized into approach. After approval, ordinary actions on listed domains can ' +
+    'proceed this turn; irreversible actions, JavaScript, and uploads still prompt.',
   input_schema: {
     type: 'object',
     properties: {
@@ -701,19 +762,25 @@ export const updatePlanSchema: AnthropicToolSchema = {
         type: 'array',
         items: { type: 'string' },
         description:
-          'Websites/domains you plan to visit (e.g. ["github.com", "stackoverflow.com"] or full URLs). ' +
-          'Leave empty only if not applicable.',
+          'Websites/domains you plan to visit (e.g. ["github.com"] or full URLs). ' +
+          'Optional; empty array if not applicable. Official densable field.',
       },
       approach: {
         type: 'array',
         items: { type: 'string' },
         description:
-          'Ordered high-level steps you will follow (e.g. ["Navigate to homepage", ' +
-          '"Search for documentation", "Extract key information"]). Outcome-focused, ' +
-          'no browser tool names. Be concise — aim for 3-7 steps.',
+          'Ordered high-level steps (e.g. ["Open homepage", "Search docs"]). ' +
+          'Outcome-focused, no browser tool names. Aim for 3–7 steps. Official densable field.',
+      },
+      plan: {
+        type: 'string',
+        description:
+          'Optional free-text plan (CLI convenience). Used when approach is omitted; ' +
+          'split on newlines into steps when possible.',
       },
     },
-    required: ['domains', 'approach'],
+    // Not all densable clients mark both required; keep flexible for CLI plan-only.
+    required: [],
   },
 };
 
@@ -898,9 +965,12 @@ const filePart = z.object({
 
 export const fileUploadInput = z
   .object({
+    // Claude Code host expands local paths → base64 files[] before tool_request.
     files: z.array(filePart).optional(),
     fileIds: z.array(z.string().min(1)).optional(),
-    ref: z.string().min(1),
+    // ref OR coordinate (CLI may target drop zones by screenshot coords).
+    ref: z.string().min(1).optional(),
+    coordinate: z.tuple([z.number(), z.number()]).optional(),
     tabId: z.number().optional(),
     paths: z.array(z.string()).optional(),
   })
@@ -922,15 +992,25 @@ export const fileUploadInput = z
         message: 'Provide at least one entry in `files` (base64) or `fileIds` (from user attachments).',
       });
     }
+    if (!v.ref && !v.coordinate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ref'],
+        message: 'Provide either `ref` (file input from read_page) or `coordinate` [x,y] drop target.',
+      });
+    }
   });
 
 export const fileUploadSchema: AnthropicToolSchema = {
   name: 'file_upload',
   description:
-    'Upload one or multiple files to a file input element on the page. ' +
-    'Do not click file upload buttons or file inputs — clicking opens a native file picker you cannot see. ' +
-    'Locate the input with read_page/find, then pass its ref here. ' +
-    'Supply file bytes as base64 in `files`, or `fileIds` from user attachments in the side panel.',
+    'Upload one or multiple files to a file input or drop target on the page. ' +
+    'Do not click file upload buttons — the native picker is invisible to the agent. ' +
+    'REQUIRED target: either `ref` (from read_page/find on the file input) OR `coordinate` [x,y] ' +
+    'for a visible drop zone. Files alone are not enough. ' +
+    'Over MCP / Claude Code: host expands local paths → pass base64 in ' +
+    '`files: [{data,name,mimeType}]` (or side-panel `fileIds`). ' +
+    'Native messaging max ~1MB per message; keep each file well under that after base64.',
   input_schema: {
     type: 'object',
     properties: {
@@ -945,7 +1025,8 @@ export const fileUploadSchema: AnthropicToolSchema = {
           },
           required: ['data', 'name'],
         },
-        description: 'Files to upload as base64-encoded bytes.',
+        description:
+          'Files as base64 (Claude Code / Desktop host expands filesystem paths before sending).',
       },
       fileIds: {
         type: 'array',
@@ -954,11 +1035,20 @@ export const fileUploadSchema: AnthropicToolSchema = {
       },
       ref: {
         type: 'string',
-        description: 'Element reference ID of the file input from read_page or find (e.g. ref_1).',
+        description:
+          'REQUIRED unless coordinate is set: element ref of the file input from read_page/find (e.g. ref_1).',
+      },
+      coordinate: {
+        type: 'array',
+        items: { type: 'number' },
+        minItems: 2,
+        maxItems: 2,
+        description:
+          'REQUIRED unless ref is set: [x,y] viewport drop target (alternative to ref).',
       },
       tabId: tabIdProp,
     },
-    required: ['ref'],
+    required: [],
   },
 };
 

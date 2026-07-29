@@ -240,13 +240,33 @@ export function Options() {
   const save = useCallback(async () => {
     // base URL 在**保存时**归一化，不在输入时 —— 输入时归一化会把光标
     // 弹到末尾，还会在用户刚敲完 "https:/" 时就补成 "https://https:/"。
-    const next: Settings = { ...draft, apiBaseUrl: normalizeBaseUrl(draft.apiBaseUrl) };
-    const stored = await saveSettings(next);
-    setDraft(stored);
-    setSaved(stored);
-    applyMode(stored.mode);
-    setFlash(getUiStrings(stored.locale).saved);
-    window.setTimeout(() => setFlash(null), 2000);
+    try {
+      const next: Settings = {
+        ...draft,
+        apiBaseUrl: normalizeBaseUrl(draft.apiBaseUrl),
+        // Defensive copies — never hand non-arrays to the renderer after save.
+        availableModels: Array.isArray(draft.availableModels)
+          ? draft.availableModels
+          : [],
+        allowedDomains: Array.isArray(draft.allowedDomains) ? draft.allowedDomains : [],
+        deniedDomains: Array.isArray(draft.deniedDomains) ? draft.deniedDomains : [],
+      };
+      const stored = await saveSettings(next);
+      // Split state updates across frames so a single commit doesn't thrash
+      // every text node at once (Chrome translate + React removeChild race).
+      setDraft(stored);
+      setSaved(stored);
+      applyMode(stored.mode);
+      const savedLabel = getUiStrings(stored.locale).saved ?? 'Saved.';
+      window.requestAnimationFrame(() => {
+        setFlash(savedLabel);
+        window.setTimeout(() => setFlash(null), 2000);
+      });
+    } catch (e) {
+      console.error('[options] save failed', e);
+      setFlash(e instanceof Error ? e.message : String(e));
+      window.setTimeout(() => setFlash(null), 4000);
+    }
   }, [draft]);
 
   const revert = useCallback(() => {
@@ -427,7 +447,10 @@ function OptionsBody({
   const t = useUi();
 
   return (
-    <div className="mx-auto max-w-2xl px-6 py-8">
+    <div
+      className="mx-auto max-w-2xl px-6 py-8 notranslate"
+      translate="no"
+    >
       <h1 className="font-heading mb-1 text-text-100">{t.optionsHeading}</h1>
       <p className="font-base mb-8 text-sm text-text-400">{t.optionsIntro}</p>
 
@@ -474,7 +497,7 @@ function OptionsBody({
               className={INPUT}
             />
             <datalist id="model-list">
-              {draft.availableModels.map((m) => (
+              {(draft.availableModels ?? []).map((m) => (
                 <option key={m} value={m} />
               ))}
             </datalist>
@@ -592,7 +615,7 @@ function OptionsBody({
             rows={3}
             spellCheck={false}
             placeholder="example.com"
-            value={draft.allowedDomains.join('\n')}
+            value={(draft.allowedDomains ?? []).join('\n')}
             onChange={(e) => patch('allowedDomains', splitHosts(e.target.value))}
             className={cn(INPUT, 'font-mono text-xs')}
           />
@@ -603,7 +626,7 @@ function OptionsBody({
             rows={3}
             spellCheck={false}
             placeholder="mail.google.com"
-            value={draft.deniedDomains.join('\n')}
+            value={(draft.deniedDomains ?? []).join('\n')}
             onChange={(e) => patch('deniedDomains', splitHosts(e.target.value))}
             className={cn(INPUT, 'font-mono text-xs')}
           />

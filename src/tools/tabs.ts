@@ -277,13 +277,21 @@ function isRefMissingResponse(res: unknown): boolean {
   );
 }
 
-/** Frame ids for multi-frame a11y / form_input (main frame first). */
+/**
+ * Frame ids for multi-frame a11y / form_input (main frame first).
+ * Prefer chrome.webNavigation.getAllFrames so cross-origin iframes are included
+ * (content-script walk cannot see other origins). Falls back to [0] only if
+ * the permission/API is unavailable.
+ */
 export async function listFrameIds(tabId: number): Promise<number[]> {
   try {
-    if (chrome.webNavigation?.getAllFrames) {
+    if (typeof chrome !== 'undefined' && chrome.webNavigation?.getAllFrames) {
       const frames = await chrome.webNavigation.getAllFrames({ tabId });
       if (frames?.length) {
+        // Stable: main frame first, then by frameId. Skip about:blank error frames
+        // that have no content script (errorOccurred).
         return frames
+          .filter((f) => !f.errorOccurred)
           .map((f) => f.frameId)
           .sort((a, b) => (a === 0 ? -1 : b === 0 ? 1 : a - b));
       }

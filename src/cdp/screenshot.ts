@@ -204,6 +204,25 @@ export async function captureVisible(
 }
 
 /**
+ * Decode a data:image/...;base64,... URL without fetch().
+ *
+ * Extension pages CSP is connect-src 'self' https: http: wss: ws: — **data:** is
+ * not allowed for fetch/XHR. Using fetch(dataUrl) throws:
+ *   "Connecting to 'data:image/jpeg;base64,...' violates ... connect-src"
+ * and captureVisibleTab path fails silently (returns null).
+ */
+function dataUrlToBlob(dataUrl: string): Blob {
+  const m = /^data:([^;]+);base64,(.+)$/i.exec(dataUrl);
+  if (!m) throw new Error('Invalid data URL for screenshot decode');
+  const mime = m[1] || 'image/jpeg';
+  const b64 = m[2]!;
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+/**
  * Decode capture → resize to TARGET_MAX_* / API budget → raw base64.
  * Final width/height are the pixels the model (and our thumbs) actually see.
  */
@@ -219,7 +238,7 @@ async function fitCaptureToModel(
   note?: string;
 } | null> {
   try {
-    const blob = await (await fetch(dataUrl)).blob();
+    const blob = dataUrlToBlob(dataUrl);
     const bitmap = await createImageBitmap(blob);
     const naturalW = bitmap.width;
     const naturalH = bitmap.height;

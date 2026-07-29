@@ -17,7 +17,7 @@ import type {
 } from '@/shared/types';
 import { PERMISSION } from '@/shared/types';
 import { ACTION_PERMISSION, NO_PERMISSION_ACTIONS } from '@/permissions/rules';
-import { hostOf, permissionManager } from '@/permissions/manager';
+import { hostOf, isOperableUrl, permissionManager } from '@/permissions/manager';
 import { peekSettings } from '@/storage/settings';
 import * as cdp from '@/cdp/session';
 import * as input from '@/cdp/input';
@@ -70,6 +70,7 @@ import {
   tabsContextMcpInput,
   tabsContextMcpSchema,
   tabsCreateSchema,
+  tabsCreateMcpInput,
   tabsCreateMcpSchema,
   todoWriteInput,
   todoWriteSchema,
@@ -917,17 +918,26 @@ const navigateTool: Tool = {
     }
 
     // Official DOMAIN_TRANSITION (jZ): cross-host navigate pauses for Continue / Always.
+    // Skip when leaving a non-operable seed (chrome://newtab, about:blank, …) —
+    // those pages cannot be "operated on"; permission must be about the destination.
     let fromDomain = '';
     let toDomain = '';
+    let currentUrl = '';
     if (!isHistory) {
       try {
-        const cur = await getTabUrl(tabId);
-        fromDomain = hostOf(cur);
+        currentUrl = await getTabUrl(tabId);
+        fromDomain = hostOf(currentUrl);
         toDomain = hostOf(navigateTarget);
       } catch {
         /* ignore */
       }
-      if (fromDomain && toDomain && fromDomain !== toDomain) {
+      if (
+        fromDomain &&
+        toDomain &&
+        fromDomain !== toDomain &&
+        isOperableUrl(currentUrl) &&
+        isOperableUrl(navigateTarget)
+      ) {
         const transition = await guard(
           ctx,
           tabId,
@@ -943,36 +953,56 @@ const navigateTool: Tool = {
       }
     }
 
+    // NAVIGATE must check the *destination* (or history action label), never the
+    // current chrome:// seed tab — otherwise MCP tabs stuck on newtab hard-fail.
     const blocked = await guard(
       ctx,
       tabId,
       PERMISSION.NAVIGATE,
       isHistory ? `Go ${target}` : `Navigate to ${target}`,
-      { actionData: { url: target, force: Boolean(args.force) } },
+      {
+        actionData: { url: target, force: Boolean(args.force) },
+        ...(isHistory ? {} : { urlOverride: navigateTarget }),
+      },
     );
     if (blocked) return blocked;
 
     try {
-      await showIndicator(tabId, 'Navigating');
+      // Indicator/content-script may fail on chrome:// — never block navigation.
+      await showIndicator(tabId, 'Navigating').catch(() => {});
 
-      // Official mI: beforeunload defaults to block; force:true accepts Leave site?
-      // Ensure dialog handler is installed so policy is honored.
-      const attachErr = await ensureAttached(tabId);
-      if (attachErr) return attachErr;
+      // CDP cannot attach to chrome:// / about: / extension pages. Leaving those
+      // with chrome.tabs.update needs no beforeunload handler.
+      const leavingRestricted =
+        !isHistory && (!currentUrl || !cdp.isAttachableUrl(currentUrl));
 
       const force = Boolean(args.force);
-      const navResult = await obs.runWithBeforeunloadPolicy(tabId, force, async () => {
-        if (isHistory) {
-          await chrome.scripting.executeScript({
-            target: { tabId, frameIds: [0] },
-            world: 'MAIN',
-            args: [target],
-            func: (dir: string) => (dir === 'back' ? history.back() : history.forward()),
-          });
-        } else {
-          await chrome.tabs.update(tabId, { url: navigateTarget });
-        }
-      });
+      let navResult:
+        | { kind: 'none' }
+        | { kind: 'accepted'; suffix: string }
+        | { kind: 'blocked'; error: string } = { kind: 'none' };
+
+      if (leavingRestricted) {
+        await chrome.tabs.update(tabId, { url: navigateTarget });
+      } else {
+        // Official mI: beforeunload defaults to block; force:true accepts Leave site?
+        // Ensure dialog handler is installed so policy is honored.
+        const attachErr = await ensureAttached(tabId);
+        if (attachErr) return attachErr;
+
+        navResult = await obs.runWithBeforeunloadPolicy(tabId, force, async () => {
+          if (isHistory) {
+            await chrome.scripting.executeScript({
+              target: { tabId, frameIds: [0] },
+              world: 'MAIN',
+              args: [target],
+              func: (dir: string) => (dir === 'back' ? history.back() : history.forward()),
+            });
+          } else {
+            await chrome.tabs.update(tabId, { url: navigateTarget });
+          }
+        });
+      }
 
       if (navResult.kind === 'blocked') {
         return {
@@ -1132,8 +1162,10 @@ const tabsCreateMcpTool: Tool = {
   name: 'tabs_create_mcp',
   schema: tabsCreateMcpSchema,
   mcpOnly: true,
-  parse: parser(emptyInput, 'tabs_create_mcp'),
-  async run(_args: never) {
+  parse: parser(tabsCreateMcpInput, 'tabs_create_mcp'),
+  async run(args: z.infer<typeof tabsCreateMcpInput>) {
+    // MCP bridge handles create; sidepanel path stays mcp-only.
+    void args;
     return {
       error:
         'tabs_create_mcp is only available over open MCP (Claude Desktop / Claude Code). ' +

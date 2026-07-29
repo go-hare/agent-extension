@@ -7,3 +7,6 @@ dist/
 .env
 .env.*
 .claude/
+
+# Extension signing key (private). Public key + id are committed.
+keys/extension.pem

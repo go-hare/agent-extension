@@ -8,9 +8,13 @@
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
 import { createMessage } from '@/api/client';
 import { peekSettings } from '@/storage/settings';
-import { createSchedule, type Schedule } from './store';
+import {
+  createSchedule,
+  type Schedule,
+  type ScheduleFrequency,
+} from './store';
 
-export type ConvertFrequency = 'once' | 'daily' | 'weekly' | 'monthly' | 'annually';
+export type ConvertFrequency = ScheduleFrequency;
 
 export interface ConvertedTask {
   title: string;
@@ -19,8 +23,8 @@ export interface ConvertedTask {
   url: string;
   datetime: string;
   /**
-   * Minutes for chrome.alarms delay/period.
-   * `once` → delay only (no periodInMinutes); recurring → periodInMinutes.
+   * Minutes for chrome.alarms delay fallback when calendar fields missing.
+   * once → ~60; daily → 1440; …
    */
   everyMinutes: number;
 }
@@ -57,11 +61,10 @@ Format your response ONLY as XML with no other text or explanation:
   <datetime>...</datetime>
 </scheduled_task>`;
 
-/** Official cadence → minutes for chrome.alarms delay / period. */
+/** Official cadence → minutes fallback for chrome.alarms delay. */
 export function frequencyToMinutes(freq: ConvertFrequency): number {
   switch (freq) {
     case 'once':
-      // One-shot delay (~1h). createSchedule({ once:true }) uses delay-only, no period.
       return 60;
     case 'daily':
       return 24 * 60;
@@ -180,8 +183,9 @@ export async function convertAndCreateSchedule(opts: {
     prompt: task.prompt,
     everyMinutes: task.everyMinutes,
     tabUrl: task.url || opts.currentUrl,
-    // Official frequency once: single fire then auto-disable (no periodInMinutes).
+    frequency: task.frequency,
     once: task.frequency === 'once',
+    datetime: task.datetime || undefined,
   });
   return { schedule, task };
 }

@@ -18,8 +18,9 @@ import {
   ALARM_PREFIX,
   enqueuePrompt,
   getScheduleByAlarmName,
+  rescheduleAfterFire,
   resyncAllAlarms,
-  setScheduleEnabled,
+  type Schedule,
 } from '@/scheduling/store';
 import {
   checkNativeHostStatus,
@@ -390,39 +391,102 @@ chrome.runtime.onMessage.addListener((msg: Msg, sender, sendResponse) => {
   }
 });
 
-// ───────────────────────── 定时任务 MVP ─────────────────────────
+// ───────────────────────── 定时任务（对齐官方 EXECUTE_SCHEDULED_TASK） ─────────────────────────
 //
-// 真实 agent 需要侧栏开着。alarm 触发时：
-//  - 若有 sidepanel port → 把 prompt 塞进 session queue，侧栏 drain 后执行
-//  - 否则发通知，请用户打开 Agent
+// alarm 触发时：
+//  - 若有 sidepanel port → 入队，侧栏 drain 后执行
+//  - 否则官方路径：新开浏览窗口 + sidepanel popup 窗口执行任务
+//  - once → 禁用；monthly/annually → 重算下次 when
+
+/**
+ * Official `be()`: windows.create(url) + popup sidepanel.html?mode=window&sessionId=…
+ * then deliver prompt via queue (sidepanel drains on connect).
+ */
+async function executeScheduledTaskWindow(s: Schedule): Promise<void> {
+  const sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+  const startUrl =
+    s.tabUrl && /^https?:\/\//i.test(s.tabUrl) ? s.tabUrl : 'about:blank';
+
+  const browserWin = await chrome.windows.create({
+    url: startUrl,
+    type: 'normal',
+    focused: true,
+  });
+  if (!browserWin?.id || !browserWin.tabs?.[0]?.id) {
+    throw new Error('Failed to create window for scheduled task');
+  }
+
+  // Enqueue before opening panel so the first drain sees the task.
+  await enqueuePrompt({
+    scheduleId: s.id,
+    title: s.title,
+    prompt: s.prompt,
+    tabUrl: s.tabUrl,
+  });
+
+  const panelUrl =
+    chrome.runtime.getURL('src/sidepanel/index.html') +
+    `?mode=window&sessionId=${encodeURIComponent(sessionId)}&scheduled=1`;
+
+  const panelWin = await chrome.windows.create({
+    url: panelUrl,
+    type: 'popup',
+    width: 500,
+    height: 768,
+    left: 100,
+    top: 100,
+    focused: true,
+  });
+  if (!panelWin) {
+    throw new Error('Failed to create sidepanel window');
+  }
+
+  // Also try official sidePanel API for the browser window (best-effort).
+  try {
+    await chrome.sidePanel.open({ windowId: browserWin.id });
+  } catch {
+    /* popup panel is the reliable path */
+  }
+}
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (!alarm.name.startsWith(ALARM_PREFIX)) return;
   void (async () => {
     const s = await getScheduleByAlarmName(alarm.name);
     if (!s || !s.enabled) return;
-    if (sidepanelPorts > 0) {
-      await enqueuePrompt({
-        scheduleId: s.id,
-        title: s.title,
-        prompt: s.prompt,
-      });
-    } else {
-      try {
-        await chrome.notifications.create({
-          type: 'basic',
-          iconUrl: chrome.runtime.getURL('public/icons/icon-128.png'),
-          title: 'Scheduled task waiting',
-          message: `"${s.title}" is ready — open Agent to run it.`,
+
+    try {
+      if (sidepanelPorts > 0) {
+        await enqueuePrompt({
+          scheduleId: s.id,
+          title: s.title,
+          prompt: s.prompt,
+          tabUrl: s.tabUrl,
         });
-      } catch {
-        /* notifications may be blocked */
+      } else {
+        // Official: open task window + agent panel (do not only notify).
+        try {
+          await executeScheduledTaskWindow(s);
+        } catch (e) {
+          try {
+            await chrome.notifications.create({
+              type: 'basic',
+              iconUrl: chrome.runtime.getURL('public/icons/icon-128.png'),
+              title: 'Scheduled Task Failed',
+              message: `Task "${s.title}" failed to execute. ${
+                e instanceof Error ? e.message : String(e)
+              }`,
+              priority: 2,
+            });
+          } catch {
+            /* notifications may be blocked */
+          }
+        }
       }
-    }
-    // Official frequency once: fire once then disable (delay-only alarm has no period).
-    if (s.once) {
+    } finally {
+      // once disable; monthly/annually recompute next when (official).
       try {
-        await setScheduleEnabled(s.id, false);
+        await rescheduleAfterFire(s.id);
       } catch {
         /* ignore */
       }

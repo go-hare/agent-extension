@@ -1,5 +1,5 @@
 /**
- * Official mcpPermissionOnly popup (Claude in Chrome 1.0.81 `EZ`).
+ * Official mcpPermissionOnly popup (Claude in Chrome 1.0.81 `EZ` / jZ).
  *
  * sidepanel.html?mcpPermissionOnly=true&requestId=<uuid>
  *
@@ -8,12 +8,13 @@
  *   Card:  flex center h-screen bg-bg-100 p-3 > max-w-sm border rounded-[14px] > MZ
  *   Wait:  flex center h-screen bg-bg-100 > text-text-200 text-sm
  *
- * Wire: MCP_PERMISSION_RESPONSE { requestId, allowed } boolean only.
- * Always row disabled (disableAlwaysAllow) — SW grants ONCE + retries tool.
+ * Wire: MCP_PERMISSION_RESPONSE { requestId, allowed, scope? }.
+ * Ordinary tools: Always row disabled (disableAlwaysAllow) — SW grants ONCE + retries.
+ * DOMAIN_TRANSITION (jZ): Always continue stays available → permanent pair grant.
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import type { PermissionRequest, PermissionScope } from '@/shared/types';
+import { PERMISSION, type PermissionRequest, type PermissionScope } from '@/shared/types';
 import { PermissionBubble } from './components/PermissionBubble';
 import { BeforeYouStart } from './components/BeforeYouStart';
 import type { PermissionItem } from './state/transcript';
@@ -92,15 +93,16 @@ export function McpPermissionOnlyRoot() {
     });
   }, []);
 
-  /** Official wire only: { type, requestId, allowed }. */
+  /** Official wire: { type, requestId, allowed }; scope for DOMAIN_TRANSITION Always. */
   const respond = useCallback(
-    (allowed: boolean) => {
+    (allowed: boolean, scope: PermissionScope = 'once') => {
       if (!requestId) return;
       void chrome.runtime
         .sendMessage({
           type: 'MCP_PERMISSION_RESPONSE',
           requestId,
           allowed,
+          scope,
         })
         .catch(() => {})
         .finally(() => {
@@ -117,14 +119,17 @@ export function McpPermissionOnlyRoot() {
   );
 
   const onAnswer = useCallback(
-    (_toolUseId: string, granted: boolean, _scope: PermissionScope) => {
+    (_toolUseId: string, granted: boolean, scope: PermissionScope) => {
       setItem((prev) =>
-        prev ? { ...prev, answer: { granted, scope: 'once' } } : prev,
+        prev ? { ...prev, answer: { granted, scope } } : prev,
       );
-      respond(granted);
+      respond(granted, scope);
     },
     [respond],
   );
+
+  const isDomainTransition =
+    item?.request.permission === PERMISSION.DOMAIN_TRANSITION;
 
   // ── loading onboarding flag ──
   if (gateAccepted === null) {
@@ -172,7 +177,8 @@ export function McpPermissionOnlyRoot() {
     );
   }
 
-  // ── Official EZ card: max-w-sm border + MZ (disableAlwaysAllow) ──
+  // ── Official EZ card: max-w-sm border + MZ
+  // Ordinary tools: disableAlwaysAllow. jZ domain transition keeps Always continue.
   return (
     <UiLocaleProvider locale={settings.locale}>
       <div className="flex items-center justify-center h-screen bg-bg-100 p-3">
@@ -181,7 +187,7 @@ export function McpPermissionOnlyRoot() {
             item={item}
             onAnswer={onAnswer}
             compactAnswered={false}
-            disableAlwaysAllow
+            disableAlwaysAllow={!isDomainTransition}
           />
         </div>
       </div>

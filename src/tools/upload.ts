@@ -246,21 +246,32 @@ export function createFileUploadTool(deps: {
       }
 
       const blocked = await deps.guard(ctx, tabId, PERMISSION.UPLOAD_IMAGE, 'Upload file(s) to the page', {
-        actionData: { ref: args.ref, fileCount: (args.files?.length ?? 0) + (args.fileIds?.length ?? 0) },
+        actionData: {
+          ref: args.ref,
+          coordinate: args.coordinate,
+          fileCount: (args.files?.length ?? 0) + (args.fileIds?.length ?? 0),
+        },
       });
       if (blocked) return blocked;
 
       const files: Array<{ data: string; name: string; mimeType: string }> = [];
 
       for (const f of args.files ?? []) {
-        const size = approxBytes(f.data);
+        // Strip accidental data-URL prefix from some hosts.
+        const data = f.data.replace(/^data:[^;]+;base64,/, '');
+        const size = approxBytes(data);
+        // Soft guide: native messaging max ~1MB per message; still allow larger
+        // when the host/path can deliver (sidepanel catalog).
         if (size > MAX_FILE_BYTES) {
           return {
-            error: `File "${f.name}" is too large (~${Math.round(size / 1024 / 1024)}MB). Max per file is 8MB.`,
+            error:
+              `File "${f.name}" is too large (~${Math.round(size / 1024 / 1024)}MB). ` +
+              `Max per file is 8MB decoded. Over Claude Code MCP, keep each file well under ~700KB ` +
+              `(native messaging ~1MB message limit after base64).`,
           };
         }
         files.push({
-          data: f.data,
+          data,
           name: f.name,
           mimeType: f.mimeType || 'application/octet-stream',
         });
@@ -288,7 +299,10 @@ export function createFileUploadTool(deps: {
         return { error: 'No files to upload.' };
       }
 
-      const delivered = await deliverFiles(tabId, files, { ref: args.ref });
+      const delivered = await deliverFiles(tabId, files, {
+        ref: args.ref,
+        coordinate: args.coordinate,
+      });
       if (!delivered.ok) return { error: delivered.error };
 
       await delay(120);

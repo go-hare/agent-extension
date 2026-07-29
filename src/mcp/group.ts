@@ -434,12 +434,36 @@ export async function getOrCreateSessionTabContext(
   };
 }
 
-/** Create an empty tab inside the MCP / session group (tabs_create_mcp). */
-export async function createMcpTab(tabGroupId?: number): Promise<{
+/**
+ * Resolve optional create URL for tabs_create_mcp.
+ * - omit / empty → chrome://newtab (official seed)
+ * - bare host → https://
+ * - only http(s) allowed (no chrome:/javascript:/file:)
+ */
+export function resolveCreateMcpTabUrl(raw?: string | null): string {
+  if (raw == null) return 'chrome://newtab';
+  const trimmed = String(raw).trim();
+  if (!trimmed) return 'chrome://newtab';
+  const u = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  if (!/^https?:\/\//i.test(u)) {
+    throw new Error(
+      `tabs_create_mcp url must be http:// or https:// (got "${trimmed}"). ` +
+        `Omit url to open chrome://newtab.`,
+    );
+  }
+  return u;
+}
+
+/** Create a tab inside the MCP / session group (tabs_create_mcp). */
+export async function createMcpTab(
+  tabGroupId?: number,
+  url?: string | null,
+): Promise<{
   tabId: number;
   tabGroupId: number;
   windowId: number;
   tabs: McpTabInfo[];
+  url: string;
 }> {
   let gid = tabGroupId;
   let windowId: number;
@@ -469,11 +493,11 @@ export async function createMcpTab(tabGroupId?: number): Promise<{
     }
   }
 
-  // Official seed URL for new MCP tabs
+  const createUrl = resolveCreateMcpTabUrl(url);
   const tab = await chrome.tabs.create({
     windowId,
     active: false,
-    url: 'chrome://newtab',
+    url: createUrl,
   });
   if (tab.id == null) throw new Error('Failed to create tab - no tab ID returned');
   try {
@@ -500,6 +524,7 @@ export async function createMcpTab(tabGroupId?: number): Promise<{
     tabGroupId: gid,
     windowId,
     tabs: mapTabs(members),
+    url: createUrl,
   };
 }
 

@@ -62,7 +62,11 @@ export function resetMcpSessionTurn(): void {
 
 /**
  * Tools Desktop / Claude Code may invoke over the bridge.
- * Matches official `de` allowlist in service-worker (1.0.81).
+ * Official 1.0.81 `de` allowlist + CLI BROWSER_TOOLS extras that this fork
+ * implements (file_upload / update_plan / shortcuts_*).
+ *
+ * Not listed (CLI-local only): switch_browser / list_connected_browsers /
+ * select_browser.
  */
 export const MCP_BRIDGE_TOOLS = new Set([
   'javascript_tool',
@@ -75,12 +79,16 @@ export const MCP_BRIDGE_TOOLS = new Set([
   'resize_window',
   'gif_creator',
   'upload_image',
+  'file_upload',
   'get_page_text',
   'tabs_context_mcp',
   'tabs_create_mcp',
   'tabs_close_mcp',
   'read_console_messages',
   'read_network_requests',
+  'update_plan',
+  'shortcuts_list',
+  'shortcuts_execute',
 ]);
 
 export type NativeInbound =
@@ -443,7 +451,12 @@ async function executeMcpToolInner(params: {
   // ─── tabs_context_mcp ───
   if (name === 'tabs_context_mcp') {
     try {
-      const createIfEmpty = Boolean(params.args?.createIfEmpty);
+      // Claude Code defaults createIfEmpty to true when omitted; match that so
+      // a bare tabs_context_mcp call bootstraps a working MCP group.
+      const createIfEmpty =
+        params.args?.createIfEmpty === undefined
+          ? true
+          : Boolean(params.args.createIfEmpty);
       if (params.sessionScope) {
         const ctx = await getOrCreateSessionTabContext(
           params.tabGroupId ?? params.sessionScope.tabGroupId,
@@ -505,9 +518,12 @@ async function executeMcpToolInner(params: {
           'No tab group exists for this session yet. Call tabs_context_mcp with createIfEmpty: true first — that creates this session\'s group and returns its tab IDs.',
         );
       }
+      const rawUrl =
+        typeof params.args?.url === 'string' ? params.args.url : undefined;
       const r = await createMcpTab(
         sessionGid ??
           (params.sessionScope ? undefined : params.tabGroupId),
+        rawUrl,
       );
       // When session-scoped without explicit id, createMcpTab uses shared group —
       // for session with id we already passed it.
@@ -516,9 +532,12 @@ async function executeMcpToolInner(params: {
         params.tabGroupId ??
         r.tabGroupId;
       trackMcpTab(r.tabId, gid);
+      const urlNote =
+        r.url && r.url !== 'chrome://newtab' ? ` url=${r.url}` : '';
       return toolOkContent(
         `Created new tab. Tab ID: ${r.tabId}` +
-          (gid != null ? ` (group ${gid})` : ''),
+          (gid != null ? ` (group ${gid})` : '') +
+          urlNote,
       );
     } catch (e) {
       return toolErrorContent(
@@ -630,7 +649,7 @@ async function executeMcpToolInner(params: {
 
       // Official: grantPermission({type:"netloc", netloc:e.host}, qI.ONCE, toolUseId, origin)
       // ONCE is netloc-scoped (URL.host may include port) — no permission type.
-      // Domain transitions are pair-scoped (from→to), not netloc ONCE.
+      // Domain transitions are pair-scoped (from→to); Always continue → permanent.
       if (pr.permission === PERMISSION.DOMAIN_TRANSITION) {
         const ad = (pr.actionData ?? null) as
           | { fromDomain?: string; toDomain?: string }
@@ -638,7 +657,11 @@ async function executeMcpToolInner(params: {
         const from = typeof ad?.fromDomain === 'string' ? ad.fromDomain : '';
         const to =
           typeof ad?.toDomain === 'string' ? ad.toDomain : hostOf(pr.url);
-        mcpPermissionManager.grantDomainTransition(from, to, false);
+        mcpPermissionManager.grantDomainTransition(
+          from,
+          to,
+          decision.scope === 'always',
+        );
       } else {
         const netloc = netlocOf(pr.url) || hostOf(pr.url);
         if (netloc) {

@@ -84,7 +84,11 @@ export async function abortAllMcpPermissions(): Promise<void> {
   }
 }
 
-async function finishInflight(id: string, allowed: boolean): Promise<boolean> {
+async function finishInflight(
+  id: string,
+  allowed: boolean,
+  scope: PermissionScope = 'once',
+): Promise<boolean> {
   const meta = inflight.get(id);
   // Already finished (Allow/Decline, timeout, abort, or onRemoved after settle).
   // Do NOT re-resolve — a late windows.onRemoved after Allow would otherwise
@@ -96,7 +100,8 @@ async function finishInflight(id: string, allowed: boolean): Promise<boolean> {
   // Resolve the waiter BEFORE tearing down the popup window. chrome.windows.remove
   // can fire onRemoved synchronously; that path must see inflight already empty
   // and no-op (above), without flipping the decision.
-  await mcpPermissionManager.resolve(id, allowed, 'once');
+  // DOMAIN_TRANSITION may pass scope "always" for jZ Always continue (pair on disk).
+  await mcpPermissionManager.resolve(id, allowed, scope);
 
   if (meta.storageKey) {
     try {
@@ -134,8 +139,12 @@ export async function handleMcpPermissionResponse(
     typeof msg.allowed === 'boolean'
       ? msg.allowed
       : Boolean(msg.granted);
-  // Ignore msg.scope — MCP path is ONCE-only like official.
-  return finishInflight(id, allowed);
+  // Default ONCE; DOMAIN_TRANSITION Always continue may pass scope "always".
+  const scope: PermissionScope =
+    msg.scope === 'always' || msg.scope === 'turn' || msg.scope === 'domain'
+      ? msg.scope
+      : 'once';
+  return finishInflight(id, allowed, scope);
 }
 
 /**
@@ -316,6 +325,7 @@ export async function promptMcpPermission(opts: {
     }
   }
 
+  // Stash scope on the decision so bridge can permanent-grant DOMAIN_TRANSITION Always.
   if (!answer.granted) {
     if (opts.signal?.aborted) {
       return {
@@ -333,5 +343,9 @@ export async function promptMcpPermission(opts: {
     };
   }
 
-  return { allowed: true, needsPrompt: false };
+  return {
+    allowed: true,
+    needsPrompt: false,
+    scope: answer.scope ?? 'once',
+  };
 }

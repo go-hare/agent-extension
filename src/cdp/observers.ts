@@ -409,6 +409,10 @@ export function consumeBeforeunloadOutcome(tabId: number): BeforeunloadOutcome |
 /**
  * Official mI(tabId, force, navigateFn):
  * set policy → run navigate → wait briefly → return accepted/blocked/none.
+ *
+ * Wait window: official default is 300ms. We use a short primary wait, then if
+ * still pending and force=false, a second short poll so slow beforeunload handlers
+ * are less likely to race past us (still bounded — never hang the tool).
  */
 export async function runWithBeforeunloadPolicy(
   tabId: number,
@@ -421,8 +425,14 @@ export async function runWithBeforeunloadPolicy(
 > {
   setBeforeunloadPolicy(tabId, force ? 'accept' : 'dismiss');
   await navigateFn();
+  // Primary wait (official 300ms). Dismissed outcomes wake the waiter early.
   await waitForBeforeunloadResolution(tabId, 300);
-  const outcome = consumeBeforeunloadOutcome(tabId);
+  let outcome = beforeunloadOutcomeByTab.get(tabId);
+  // Secondary grace: dialog sometimes opens just after the first timeout on slow pages.
+  if (!outcome) {
+    await waitForBeforeunloadResolution(tabId, 200);
+  }
+  outcome = consumeBeforeunloadOutcome(tabId);
   if (!outcome) return { kind: 'none' };
   if (outcome.action === 'accepted') {
     return {

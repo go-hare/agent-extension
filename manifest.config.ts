@@ -1,12 +1,32 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defineManifest } from '@crxjs/vite-plugin';
 import pkg from './package.json' with { type: 'json' };
+
+/**
+ * Fixed extension id for Claude Code / Desktop native messaging.
+ *
+ * We use our own RSA public key (not Anthropic's) so the id is stable across
+ * Load unpacked paths and does not collide with the Chrome Web Store Claude
+ * in Chrome id (`fcoeoabgfenejglbffodgkkbkcdhcgfn`).
+ *
+ * ID: bbkeopmjdjdiiaahndbbjhckdbgblpjn  (keys/extension-id.txt)
+ * CLI must allow: chrome-extension://bbkeopmjdjdiiaahndbbjhckdbgblpjn/
+ * e.g. CLAUDE_CHROME_EXTENSION_IDS=bbkeopmjdjdiiaahndbbjhckdbgblpjn
+ */
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const EXTENSION_PUBLIC_KEY = readFileSync(
+  join(__dirname, 'keys/extension-public.b64'),
+  'utf8',
+).trim();
 
 /**
  * MV3 manifest.
  *
  * 与原版 Claude in Chrome 1.0.81 的差异（有意为之）：
- *  - 不带 `key`：原版内嵌的是 Anthropic 官方扩展公钥，沿用会导致扩展 ID 冲突 /
- *    被官方商店版覆盖。这里留空，Chrome 在 load unpacked 时按路径派生 ID。
+ *  - 自有 `key`（非官方公钥）→ 固定 id `bbkeopmjdjdiiaahndbbjhckdbgblpjn`，
+ *    可与商店版共存；Claude Code native host 需把该 id 加入 allowed_origins。
  *  - 不带 `update_url`：不走 Chrome Web Store 更新通道。
  *  - `externally_connectable` 去掉了 claude.ai（本项目不接官方站点）。
  *  - `options_page` 指向自己的配置页（Base URL + API Key）。
@@ -19,6 +39,8 @@ export default defineManifest({
   description: '__MSG_extDescription__',
   minimum_chrome_version: '116',
   default_locale: 'en',
+  // Stable extension id for native messaging (Claude Code / Desktop).
+  key: EXTENSION_PUBLIC_KEY,
 
   icons: {
     '128': 'public/icons/icon-128.png',

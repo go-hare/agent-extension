@@ -196,20 +196,21 @@ export class PermissionManager {
     const s = peekSettings();
     this.deniedDomains = s.deniedDomains ?? [];
     this.allowedDomains = s.allowedDomains ?? [];
+    // Domain-transition "Always continue" pair grants are shared (chat + MCP).
+    // Load them even for isolated MCP PM so permanent jZ Always survives re-init.
+    const transitions = await get<DomainTransitionGrant[]>(STORAGE_KEYS.DOMAIN_TRANSITIONS, []);
+    this.domainTransitions = new Set(
+      transitions.map((t) => domainTransitionKey(t.fromDomain, t.toDomain)).filter(Boolean),
+    );
     if (this.isolated) {
-      // Official empty PM: do not load chat always / turn grants.
+      // Official empty PM: do not load chat host:permission always / turn grants.
       this.granted = {};
       this.turnGrants.clear();
-      this.domainTransitions.clear();
       return;
     }
     this.granted = await get<GrantMap>(STORAGE_KEYS.GRANTED_PERMISSIONS, {});
     const turn = await get<string[]>(SESSION_KEYS.TURN_APPROVED, [], 'session');
     this.turnGrants = new Set(turn);
-    const transitions = await get<DomainTransitionGrant[]>(STORAGE_KEYS.DOMAIN_TRANSITIONS, []);
-    this.domainTransitions = new Set(
-      transitions.map((t) => domainTransitionKey(t.fromDomain, t.toDomain)).filter(Boolean),
-    );
   }
 
   /** 新一轮对话开始。turn 级授权和拒绝都清空。 */
@@ -273,7 +274,9 @@ export class PermissionManager {
   grantDomainTransition(fromDomain: string, toDomain: string, permanent: boolean): void {
     const key = domainTransitionKey(fromDomain, toDomain);
     if (!key) return;
-    if (permanent && !this.isolated) {
+    // Domain-transition "Always continue" is a pair grant on disk for both
+    // chat and MCP (official jZ Always). Other MCP grants stay turn/ONCE-only.
+    if (permanent) {
       this.domainTransitions.add(key);
       void this.persistDomainTransitions();
     } else {
@@ -559,8 +562,8 @@ export class PermissionManager {
       if (entry.permission === PERMISSION.DOMAIN_TRANSITION) {
         const from = entry.fromDomain ?? '';
         const to = entry.toDomain ?? entry.host;
-        // Chat: permanent always lands on disk; MCP isolated: turn-only (popup is once).
-        this.grantDomainTransition(from, to, scope === 'always' && !this.isolated);
+        // jZ Always continue → permanent pair (chat + MCP).
+        this.grantDomainTransition(from, to, scope === 'always');
         entry.resolve({ granted, scope });
         return;
       }

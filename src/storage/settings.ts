@@ -4,9 +4,24 @@ import { STORAGE_KEYS, get, setIfChanged } from './keys';
 
 let cache: Settings | null = null;
 
+/** Coerce storage pollution so options UI never crashes on `.join` / `.map`. */
+function normalizeSettings(raw: Partial<Settings> | null | undefined): Settings {
+  const merged: Settings = { ...DEFAULT_SETTINGS, ...(raw ?? {}) };
+  if (!Array.isArray(merged.availableModels)) merged.availableModels = [];
+  if (!Array.isArray(merged.allowedDomains)) merged.allowedDomains = [];
+  if (!Array.isArray(merged.deniedDomains)) merged.deniedDomains = [];
+  if (typeof merged.apiBaseUrl !== 'string') merged.apiBaseUrl = '';
+  if (typeof merged.apiKey !== 'string') merged.apiKey = '';
+  if (typeof merged.model !== 'string') merged.model = '';
+  if (typeof merged.maxTokens !== 'number' || !Number.isFinite(merged.maxTokens)) {
+    merged.maxTokens = DEFAULT_SETTINGS.maxTokens;
+  }
+  return merged;
+}
+
 export async function loadSettings(): Promise<Settings> {
   const stored = await get<Partial<Settings>>(STORAGE_KEYS.SETTINGS, {});
-  const next: Settings = { ...DEFAULT_SETTINGS, ...stored };
+  const next = normalizeSettings(stored);
   // First run (no saved locale): match browser UI language like official Claude in Chrome.
   if (!Object.prototype.hasOwnProperty.call(stored, 'locale') || !stored.locale) {
     next.locale = detectBrowserUiLocale();
@@ -35,7 +50,7 @@ export function hasUsableCredentials(s: Settings = peekSettings()): boolean {
 
 export async function saveSettings(patch: Partial<Settings>): Promise<Settings> {
   const cur = cache ?? (await loadSettings());
-  const next = { ...cur, ...patch };
+  const next = normalizeSettings({ ...cur, ...patch });
   await setIfChanged(STORAGE_KEYS.SETTINGS, next);
   cache = next;
   return next;
@@ -47,7 +62,7 @@ export function watchSettings(onChange?: (s: Settings) => void): void {
     if (areaName !== 'local') return;
     const c = changes[STORAGE_KEYS.SETTINGS];
     if (!c) return;
-    cache = { ...DEFAULT_SETTINGS, ...(c.newValue as Partial<Settings>) };
+    cache = normalizeSettings(c.newValue as Partial<Settings>);
     onChange?.(cache);
   });
 }

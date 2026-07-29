@@ -29,10 +29,17 @@ export const PERMISSION = {
 
 export type Permission = (typeof PERMISSION)[keyof typeof PERMISSION];
 
+export type PermissionScope = 'once' | 'turn' | 'domain' | 'always';
+
 /** 权限判定结果。needsPrompt 为 true 时必须在**聊天界面**弹授权，不能在页面里问。 */
 export interface PermissionDecision {
   allowed: boolean;
   needsPrompt: boolean;
+  /**
+   * Scope the user picked when answering a prompt (e.g. DOMAIN_TRANSITION Always).
+   * Callers may use this to persist grants after MCP popup responses.
+   */
+  scope?: PermissionScope;
   /** 为什么被拒 / 为什么要问，用于回灌给模型的 tool_result 文案 */
   reason?: string;
 }
@@ -51,8 +58,6 @@ export interface PermissionRequest {
   /** 原始工具入参，供 UI 展示细节 */
   actionData?: unknown;
 }
-
-export type PermissionScope = 'once' | 'turn' | 'domain' | 'always';
 
 export interface PermissionResponse {
   toolUseId: string;

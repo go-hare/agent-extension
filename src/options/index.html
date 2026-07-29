@@ -1,12 +1,24 @@
 <!doctype html>
-<html lang="en" data-theme="claude" data-mode="light">
+<!--
+  translate="no" / notranslate: Chrome (and other) auto-translate rewrites text
+  nodes under #root. React 19 then throws NotFoundError on removeChild during
+  reconcile (often right after Save toggles flash / dirty UI) and the page goes blank.
+-->
+<html
+  lang="en"
+  translate="no"
+  class="notranslate"
+  data-theme="claude"
+  data-mode="light"
+>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="google" content="notranslate" />
     <title>Claude Options</title>
   </head>
-  <body class="bg-bg-100 text-text-100">
-    <div id="root"></div>
+  <body class="bg-bg-100 text-text-100 notranslate" translate="no">
+    <div id="root" class="notranslate" translate="no"></div>
     <script type="module" src="./main.tsx"></script>
   </body>
 </html>
