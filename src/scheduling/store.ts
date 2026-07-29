@@ -52,6 +52,22 @@ function uid(): string {
   return `sch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * Serialize schedule mutations — chrome.storage list→push→save races drop rows
+ * under concurrent createSchedule (convert + Options + alarm paths).
+ */
+let scheduleChain: Promise<unknown> = Promise.resolve();
+
+function withScheduleLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = scheduleChain.then(fn, fn);
+  // Keep the chain alive even if this op rejects.
+  scheduleChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 export async function listSchedules(): Promise<Schedule[]> {
   const raw = await chrome.storage.local.get(KEY);
   const items = (raw[KEY] as Schedule[] | undefined) ?? [];
@@ -82,73 +98,79 @@ export async function createSchedule(input: {
   monthAndDay?: string;
   datetime?: string;
 }): Promise<Schedule> {
-  const items = await listSchedules();
-  const everyMinutes = Math.max(1, Math.round(input.everyMinutes));
-  const now = Date.now();
-  const frequency: ScheduleFrequency =
-    input.frequency ?? (input.once ? 'once' : 'daily');
-  const parsed = parseDatetimeFields(input.datetime, frequency);
-  const s: Schedule = {
-    id: uid(),
-    title: input.title,
-    prompt: input.prompt,
-    everyMinutes,
-    frequency,
-    once: frequency === 'once',
-    enabled: true,
-    tabUrl: input.tabUrl,
-    nextRun: now + everyMinutes * 60_000,
-    createdAt: now,
-    specificTime: input.specificTime ?? parsed.specificTime,
-    specificDate: input.specificDate ?? parsed.specificDate,
-    dayOfWeek: input.dayOfWeek ?? parsed.dayOfWeek,
-    dayOfMonth: input.dayOfMonth ?? parsed.dayOfMonth,
-    monthAndDay: input.monthAndDay ?? parsed.monthAndDay,
-    datetime: input.datetime,
-  };
-  // If datetime gave an absolute next fire, prefer it for nextRun.
-  const when = computeNextWhen(s, now);
-  if (when != null) s.nextRun = when;
-  items.push(s);
-  await saveSchedules(items);
-  await syncAlarm(s);
-  // syncAlarm may refine nextRun — persist again.
-  await saveSchedules(items);
-  return s;
+  return withScheduleLock(async () => {
+    const items = await listSchedules();
+    const everyMinutes = Math.max(1, Math.round(input.everyMinutes));
+    const now = Date.now();
+    const frequency: ScheduleFrequency =
+      input.frequency ?? (input.once ? 'once' : 'daily');
+    const parsed = parseDatetimeFields(input.datetime, frequency);
+    const s: Schedule = {
+      id: uid(),
+      title: input.title,
+      prompt: input.prompt,
+      everyMinutes,
+      frequency,
+      once: frequency === 'once',
+      enabled: true,
+      tabUrl: input.tabUrl,
+      nextRun: now + everyMinutes * 60_000,
+      createdAt: now,
+      specificTime: input.specificTime ?? parsed.specificTime,
+      specificDate: input.specificDate ?? parsed.specificDate,
+      dayOfWeek: input.dayOfWeek ?? parsed.dayOfWeek,
+      dayOfMonth: input.dayOfMonth ?? parsed.dayOfMonth,
+      monthAndDay: input.monthAndDay ?? parsed.monthAndDay,
+      datetime: input.datetime,
+    };
+    // If datetime gave an absolute next fire, prefer it for nextRun.
+    const when = computeNextWhen(s, now);
+    if (when != null) s.nextRun = when;
+    items.push(s);
+    await saveSchedules(items);
+    await syncAlarm(s);
+    // syncAlarm may refine nextRun — persist again.
+    await saveSchedules(items);
+    return s;
+  });
 }
 
 export async function deleteSchedule(id: string): Promise<boolean> {
-  const items = await listSchedules();
-  const next = items.filter((s) => s.id !== id);
-  if (next.length === items.length) return false;
-  await saveSchedules(next);
-  try {
-    await chrome.alarms.clear(ALARM_PREFIX + id);
-  } catch {
-    /* ignore */
-  }
-  return true;
-}
-
-export async function setScheduleEnabled(id: string, enabled: boolean): Promise<Schedule | null> {
-  const items = await listSchedules();
-  const s = items.find((x) => x.id === id);
-  if (!s) return null;
-  s.enabled = enabled;
-  if (enabled) {
-    const when = computeNextWhen(s, Date.now());
-    s.nextRun = when ?? Date.now() + s.everyMinutes * 60_000;
-  }
-  await saveSchedules(items);
-  if (enabled) await syncAlarm(s);
-  else {
+  return withScheduleLock(async () => {
+    const items = await listSchedules();
+    const next = items.filter((s) => s.id !== id);
+    if (next.length === items.length) return false;
+    await saveSchedules(next);
     try {
       await chrome.alarms.clear(ALARM_PREFIX + id);
     } catch {
       /* ignore */
     }
-  }
-  return s;
+    return true;
+  });
+}
+
+export async function setScheduleEnabled(id: string, enabled: boolean): Promise<Schedule | null> {
+  return withScheduleLock(async () => {
+    const items = await listSchedules();
+    const s = items.find((x) => x.id === id);
+    if (!s) return null;
+    s.enabled = enabled;
+    if (enabled) {
+      const when = computeNextWhen(s, Date.now());
+      s.nextRun = when ?? Date.now() + s.everyMinutes * 60_000;
+    }
+    await saveSchedules(items);
+    if (enabled) await syncAlarm(s);
+    else {
+      try {
+        await chrome.alarms.clear(ALARM_PREFIX + id);
+      } catch {
+        /* ignore */
+      }
+    }
+    return s;
+  });
 }
 
 /**
@@ -198,36 +220,40 @@ export async function syncAlarm(s: Schedule): Promise<void> {
 
 /** After monthly/annually fire, recompute next occurrence (official path). */
 export async function rescheduleAfterFire(id: string): Promise<void> {
-  const items = await listSchedules();
-  const s = items.find((x) => x.id === id);
-  if (!s || !s.enabled) return;
-  const freq = s.frequency ?? (s.once ? 'once' : 'daily');
-  if (freq === 'once') {
-    s.enabled = false;
-    await saveSchedules(items);
-    try {
-      await chrome.alarms.clear(ALARM_PREFIX + id);
-    } catch {
-      /* ignore */
+  return withScheduleLock(async () => {
+    const items = await listSchedules();
+    const s = items.find((x) => x.id === id);
+    if (!s || !s.enabled) return;
+    const freq = s.frequency ?? (s.once ? 'once' : 'daily');
+    if (freq === 'once') {
+      s.enabled = false;
+      await saveSchedules(items);
+      try {
+        await chrome.alarms.clear(ALARM_PREFIX + id);
+      } catch {
+        /* ignore */
+      }
+      return;
     }
-    return;
-  }
-  if (freq === 'monthly' || freq === 'annually') {
-    // Next occurrence must be strictly after now.
-    const when = computeNextWhen(s, Date.now() + 60_000);
-    if (when != null) s.nextRun = when;
-    await saveSchedules(items);
-    await syncAlarm(s);
-  }
+    if (freq === 'monthly' || freq === 'annually') {
+      // Next occurrence must be strictly after now.
+      const when = computeNextWhen(s, Date.now() + 60_000);
+      if (when != null) s.nextRun = when;
+      await saveSchedules(items);
+      await syncAlarm(s);
+    }
+  });
 }
 
 export async function resyncAllAlarms(): Promise<void> {
-  const items = await listSchedules();
-  for (const s of items) {
-    if (s.enabled) await syncAlarm(s);
-  }
-  // Persist any nextRun updates from syncAlarm.
-  await saveSchedules(items);
+  return withScheduleLock(async () => {
+    const items = await listSchedules();
+    for (const s of items) {
+      if (s.enabled) await syncAlarm(s);
+    }
+    // Persist any nextRun updates from syncAlarm.
+    await saveSchedules(items);
+  });
 }
 
 export async function getScheduleByAlarmName(name: string): Promise<Schedule | undefined> {
