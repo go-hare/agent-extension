@@ -21,25 +21,37 @@ import '@/styles/theme.css';
 
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { McpPermissionOnlyRoot } from './McpPermissionOnly';
 import { bootstrapTheme } from './theme';
 import { loadSettings, watchSettings } from '@/storage/settings';
 import { installCdpListeners } from '@/cdp/session';
 
 bootstrapTheme();
 
-// Agent tools (computer/screenshot) run in the sidepanel, not the SW.
-// Without onDetach here, sessions Map stays stale after the banner is
-// dismissed → "Debugger is not attached to the tab…".
-installCdpListeners();
-
-// 预热同步缓存。App 内部也会 load 一次，这里提前发是为了让
-// peekSettings() 在第一次 send() 之前就有值。
-void loadSettings();
-watchSettings();
-
 const container = document.getElementById('root');
 if (!container) {
   throw new Error('#root is missing from sidepanel/index.html');
 }
 
-createRoot(container).render(<App />);
+// Official: sidepanel.html?mcpPermissionOnly=true&requestId=… is a focused
+// 600×600 permission popup — not the full chat agent (no CDP / sidepanel port).
+const params = new URLSearchParams(window.location.search);
+const mcpPermissionOnly = params.get('mcpPermissionOnly') === 'true';
+const mcpRequestId = params.get('requestId');
+
+if (mcpPermissionOnly && mcpRequestId) {
+  void loadSettings();
+  createRoot(container).render(<McpPermissionOnlyRoot />);
+} else {
+  // Agent tools (computer/screenshot) run in the sidepanel, not the SW.
+  // Without onDetach here, sessions Map stays stale after the banner is
+  // dismissed → "Debugger is not attached to the tab…".
+  installCdpListeners();
+
+  // 预热同步缓存。App 内部也会 load 一次，这里提前发是为了让
+  // peekSettings() 在第一次 send() 之前就有值。
+  void loadSettings();
+  watchSettings();
+
+  createRoot(container).render(<App />);
+}

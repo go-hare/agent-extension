@@ -72,6 +72,16 @@ export interface ToolContext {
    * 不挂起等 UI（对齐官方 batch 语义）。
    */
   batchMode?: boolean;
+  /**
+   * Open-MCP / native-messaging runs: skip the chat-only follow_a_plan gate.
+   * Official MCP uses a separate permissionManager without plan-first.
+   */
+  skipPlanGate?: boolean;
+  /**
+   * Official MCP: when requestPermission needs a prompt, tools return
+   * `permissionRequired` instead of waiting; bridge prompts + grantOnce + retries.
+   */
+  mcpPermissionRequired?: boolean;
   /** 当前对话 messages，供 upload_image 按 imageId 回扫历史图片。 */
   messages?: unknown[];
   /** 请求权限。工具内部调用，被拒时应返回 error 而不是抛异常。 */
@@ -99,6 +109,17 @@ export interface ToolResult {
   images?: Array<{ mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string }>;
   /** 附加的 tab 上下文，让模型知道现在有哪些 tab 可用 */
   tabContext?: TabContext;
+  /**
+   * Official MCP shape: tool returned permission_required instead of executing.
+   * Bridge prompts, grantOnce, then retries handleToolCall once.
+   */
+  permissionRequired?: {
+    permission: Permission;
+    url: string;
+    actionLabel: string;
+    screenshot?: string;
+    actionData?: unknown;
+  };
 }
 
 export interface TabInfo {

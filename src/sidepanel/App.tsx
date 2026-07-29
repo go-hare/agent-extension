@@ -51,6 +51,7 @@ import {
   type NotificationsPref,
 } from '@/notifications/prefs';
 import { classifyTab, ensureClaudeGroup } from '@/tabs/groupManager';
+import { PairingPrompt } from '@/pairing/PairingPrompt';
 
 export function App() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -111,8 +112,44 @@ function AppShell({
   /** Secondary tab in a managed Claude group → RZ screen. */
   const [secondaryMainTabId, setSecondaryMainTabId] = useState<number | null>(null);
   const groupBootstrappedFor = useRef<number | null>(null);
+  /** Official show_pairing_prompt overlay (Desktop / Claude Code). */
+  const [pairingPrompt, setPairingPrompt] = useState<{
+    requestId: string;
+    clientType: string;
+    currentName?: string;
+  } | null>(null);
 
   useEffect(() => subscribeTodos(setTodosState), []);
+
+  // Official: SW forwards pairing_request as show_pairing_prompt when panel is open.
+  useEffect(() => {
+    const onMsg = (
+      msg: {
+        type?: string;
+        request_id?: string;
+        client_type?: string;
+        current_name?: string;
+      },
+      _sender: chrome.runtime.MessageSender,
+      sendResponse: (r: unknown) => void,
+    ) => {
+      if (msg?.type !== 'show_pairing_prompt') return;
+      const requestId = msg.request_id;
+      if (!requestId) {
+        sendResponse({ handled: false });
+        return true;
+      }
+      setPairingPrompt({
+        requestId,
+        clientType: msg.client_type || 'desktop',
+        currentName: msg.current_name || undefined,
+      });
+      sendResponse({ handled: true });
+      return true;
+    };
+    chrome.runtime.onMessage.addListener(onMsg);
+    return () => chrome.runtime.onMessage.removeListener(onMsg);
+  }, []);
 
   useEffect(() => {
     void loadOnboarding().then(setOnboarding);
@@ -558,6 +595,34 @@ function AppShell({
             setExplainer(null);
           }}
         />
+      ) : null}
+
+      {/* Official in-panel PairingPrompt overlay (show_pairing_prompt). */}
+      {pairingPrompt ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm">
+            <PairingPrompt
+              requestId={pairingPrompt.requestId}
+              clientType={pairingPrompt.clientType}
+              currentName={pairingPrompt.currentName}
+              onConfirm={(id, name) => {
+                void chrome.runtime.sendMessage({
+                  type: 'pairing_confirmed',
+                  request_id: id,
+                  name,
+                });
+                setPairingPrompt(null);
+              }}
+              onDismiss={(id) => {
+                void chrome.runtime.sendMessage({
+                  type: 'pairing_dismissed',
+                  request_id: id,
+                });
+                setPairingPrompt(null);
+              }}
+            />
+          </div>
+        </div>
       ) : null}
     </div>
   );

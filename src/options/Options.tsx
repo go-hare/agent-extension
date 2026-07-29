@@ -540,6 +540,10 @@ function OptionsBody({
                   {mcpStatus.mcpConnected ? t.mcpSessionConnected : t.mcpSessionIdle}
                 </p>
               ) : null}
+              <p className="font-small mt-2 text-text-400">{t.mcpPermissionHint}</p>
+              {mcpStatus?.mcpConnected ? (
+                <p className="font-small mt-1 text-text-400">{t.mcpGroupHint}</p>
+              ) : null}
             </div>
           </div>
           <div className="flex flex-wrap gap-2 pt-1">

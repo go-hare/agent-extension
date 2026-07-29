@@ -373,6 +373,9 @@ export type UiStrings = {
   mcpRefresh: string;
   mcpReconnect: string;
   mcpHostLabel: (label: string) => string;
+  /** Extra guidance under MCP status (permissions + yellow group). */
+  mcpPermissionHint: string;
+  mcpGroupHint: string;
 };
 
 /** Keys not present (or incomplete) in official non-EN packs — English base. */
@@ -562,7 +565,7 @@ const EN_EXTRA: Pack = {
   // Options — open MCP
   sectionMcp: 'Desktop & Claude Code (MCP)',
   sectionMcpNote:
-    'When Claude Desktop or Claude Code is installed with the browser extension host, they can drive this extension over native messaging (open MCP). Tools run in a “Claude (MCP)” tab group. Permission prompts that need the side panel will be denied until you set Act without asking or pre-grant the site.',
+    'When Claude Desktop or Claude Code is installed with the browser extension host, they can drive this extension over native messaging (open MCP). Tools run in a yellow “Claude (MCP)” tab group (separate from the orange side-panel “Claude” group). Cloud pairing via claude.ai is not used — only the native host bridge.',
   mcpHostInstalled: 'Native host connected',
   mcpHostMissing:
     'No native host found. Install Claude Desktop or Claude Code, then click Reconnect. (openclaude-local is an API companion only and does not provide the tool bridge.)',
@@ -570,6 +573,10 @@ const EN_EXTRA: Pack = {
   mcpSessionIdle: 'Host present — waiting for an MCP session from Desktop / Claude Code',
   mcpRefresh: 'Refresh status',
   mcpReconnect: 'Reconnect',
+  mcpPermissionHint:
+    'When Desktop / Claude Code needs a grant, a focused 600×600 permission popup opens (official mcpPermissionOnly). MCP ignores chat Always / “Act without asking”; each action is once + retry. Nested browser_batch steps only run if already allowed — first-time grants must be standalone.',
+  mcpGroupHint:
+    'While a session is active, tabs leaving the yellow MCP group are detached from the debugger automatically (official hygiene).',
 };
 
 const ZH_CN_EXTRA: Pack = {
@@ -738,7 +745,7 @@ const ZH_CN_EXTRA: Pack = {
   teachCaptureFramesHint: '每个步骤截图一次，便于将会话导出为动态 GIF。',
   sectionMcp: 'Desktop 与 Claude Code（MCP）',
   sectionMcpNote:
-    '安装带浏览器扩展宿主的 Claude Desktop 或 Claude Code 后，可通过原生消息（open MCP）驱动本扩展。工具在「Claude (MCP)」标签组中执行。需要侧栏确认的权限会被拒绝，请改用「不询问直接操作」或在选项中预先授权站点。',
+    '安装带浏览器扩展宿主的 Claude Desktop 或 Claude Code 后，可通过原生消息（open MCP）驱动本扩展。工具在黄色「Claude (MCP)」标签组中执行（与侧栏橙色「Claude」组分开）。不走 claude.ai 云端配对，仅 native host 桥接。',
   mcpHostInstalled: '已连接原生宿主',
   mcpHostMissing:
     '未找到原生宿主。请安装 Claude Desktop 或 Claude Code 后点「重新连接」。（openclaude-local 仅是 API 伴侣，不提供工具桥接。）',
@@ -746,6 +753,10 @@ const ZH_CN_EXTRA: Pack = {
   mcpSessionIdle: '宿主已就绪 — 等待 Desktop / Claude Code 发起 MCP 会话',
   mcpRefresh: '刷新状态',
   mcpReconnect: '重新连接',
+  mcpPermissionHint:
+    'Desktop / Claude Code 需要授权时会弹出 600×600 独立审批窗（官方 mcpPermissionOnly）。MCP 不吃聊天里的 Always /「不询问直接操作」；每次动作为单次授权后重试。嵌套 browser_batch 仅执行已授权步骤 — 首次授权请单独调用。',
+  mcpGroupHint:
+    '会话进行中时，标签页离开黄色 MCP 组会自动断开调试器（与官方卫生策略一致）。',
 };
 
 /**
@@ -1433,7 +1444,7 @@ function build(locale: UiLocale): UiStrings {
     sectionMcp: p('sectionMcp', 'Desktop & Claude Code (MCP)'),
     sectionMcpNote: p(
       'sectionMcpNote',
-      'When Claude Desktop or Claude Code is installed with the browser extension host, they can drive this extension over native messaging (open MCP). Tools run in a “Claude (MCP)” tab group. Permission prompts that need the side panel will be denied until you set Act without asking or pre-grant the site.',
+      'When Claude Desktop or Claude Code is installed with the browser extension host, they can drive this extension over native messaging (open MCP). Tools run in a yellow “Claude (MCP)” tab group (separate from the orange side-panel “Claude” group). Cloud pairing via claude.ai is not used — only the native host bridge.',
     ),
     mcpHostInstalled: p('mcpHostInstalled', 'Native host connected'),
     mcpHostMissing: p(
@@ -1449,6 +1460,14 @@ function build(locale: UiLocale): UiStrings {
     mcpReconnect: p('mcpReconnect', 'Reconnect'),
     mcpHostLabel: (label) =>
       isZh ? `宿主：${label}` : `Host: ${label}`,
+    mcpPermissionHint: p(
+      'mcpPermissionHint',
+      'When Desktop / Claude Code needs a grant, a focused 600×600 permission popup opens (official mcpPermissionOnly). MCP ignores chat Always / “Act without asking”; each action is once + retry. Nested browser_batch steps only run if already allowed — first-time grants must be standalone.',
+    ),
+    mcpGroupHint: p(
+      'mcpGroupHint',
+      'While a session is active, tabs leaving the yellow MCP group are detached from the debugger automatically (official hygiene).',
+    ),
   };
 }
 

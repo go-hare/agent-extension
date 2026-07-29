@@ -24,6 +24,75 @@ import { encodeGif, uint8ToBase64 } from '@/gif/encode';
 import { putGeneratedFile, putScreenshot } from '@/media/catalog';
 import * as shot from '@/cdp/screenshot';
 import { getEffectiveTabId, getTab, delay } from './tabs';
+import { ensureOffscreenDocument } from '@/offscreen/ensure';
+import { pageUrl } from '@/pages/paths';
+
+/** Prefer offscreen GENERATE_GIF (official path); fall back to in-page encodeGif. */
+async function encodeGifPreferOffscreen(
+  frames: Array<{ jpegBase64: string; label?: string }>,
+): Promise<{ data: Uint8Array; width: number; height: number; base64: string }> {
+  try {
+    await ensureOffscreenDocument();
+    const res = (await chrome.runtime.sendMessage({
+      type: 'GENERATE_GIF',
+      frames: frames.map((f) => ({ jpegBase64: f.jpegBase64, label: f.label })),
+      options: { delayCs: 40, maxSide: 480 },
+    })) as
+      | {
+          success?: boolean;
+          error?: string;
+          result?: {
+            base64: string;
+            width: number;
+            height: number;
+            size?: number;
+            blobUrl?: string;
+          };
+        }
+      | undefined;
+    if (res?.success && res.result?.base64) {
+      const bin = atob(res.result.base64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      // Revoke offscreen blob if provided (official REVOKE_BLOB_URL).
+      if (res.result.blobUrl) {
+        void chrome.runtime
+          .sendMessage({ type: 'REVOKE_BLOB_URL', blobUrl: res.result.blobUrl })
+          .catch(() => {});
+      }
+      return {
+        data: bytes,
+        width: res.result.width,
+        height: res.result.height,
+        base64: res.result.base64,
+      };
+    }
+  } catch {
+    /* fall through to local encoder */
+  }
+  const encoded = await encodeGif(
+    frames.map((f) => ({ jpegBase64: f.jpegBase64, label: f.label })),
+    { delayCs: 40, maxSide: 480 },
+  );
+  return {
+    data: encoded.data,
+    width: encoded.width,
+    height: encoded.height,
+    base64: uint8ToBase64(encoded.data),
+  };
+}
+
+/** Store GIF for gif_viewer page and open it (official export UX). */
+async function openGifViewer(base64: string, filename: string): Promise<void> {
+  await chrome.storage.local.set({
+    exportedGifData: {
+      base64,
+      filename,
+      timestamp: Date.now(),
+    },
+  });
+  await chrome.tabs.create({ url: pageUrl('gifViewer') });
+}
 
 function parser<T extends z.ZodTypeAny>(schema: T, name: string) {
   return (raw: unknown): { ok: true; value: z.infer<T> } | { ok: false; error: string } => {
@@ -129,17 +198,16 @@ export function createGifCreatorTool(deps: { guard: GuardFn }): Tool {
           }
           if (sess.recording) stopRecording(key);
 
-          let encoded: { data: Uint8Array; width: number; height: number };
+          let encoded: { data: Uint8Array; width: number; height: number; base64: string };
           try {
-            encoded = await encodeGif(
+            encoded = await encodeGifPreferOffscreen(
               sess.frames.map((f) => ({ jpegBase64: f.jpegBase64, label: f.label })),
-              { delayCs: 40, maxSide: 480 },
             );
           } catch (e) {
             return { error: `GIF encode failed: ${e instanceof Error ? e.message : String(e)}` };
           }
 
-          const b64 = uint8ToBase64(encoded.data);
+          const b64 = encoded.base64;
           const filename =
             args.filename ||
             `recording-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.gif`;
@@ -152,6 +220,16 @@ export function createGifCreatorTool(deps: { guard: GuardFn }): Tool {
           const notes: string[] = [
             `Encoded GIF ${encoded.width}x${encoded.height}, ${sess.frames.length} frames, fileId=${fileEntry.id}.`,
           ];
+
+          // Always stage for gif_viewer (official export surface).
+          try {
+            await openGifViewer(b64, filename);
+            notes.push('Opened GIF viewer tab.');
+          } catch (e) {
+            notes.push(
+              `GIF viewer open failed: ${e instanceof Error ? e.message : String(e)}.`,
+            );
+          }
 
           if (args.download) {
             try {

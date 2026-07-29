@@ -44,6 +44,15 @@ export default defineConfig({
     target: 'chrome116',
     // 扩展页面的 chunk 名不能带 hash 之外的怪字符；保持 assets/ 布局与原版一致
     rollupOptions: {
+      // Official 1.0.81 extra pages (pairing / gif_viewer / offscreen / blocked / arc).
+      // crxjs merges these with sidepanel + options + SW + content scripts.
+      input: {
+        pairing: resolve(import.meta.dirname, 'src/pairing/index.html'),
+        gif_viewer: resolve(import.meta.dirname, 'src/gif_viewer/index.html'),
+        offscreen: resolve(import.meta.dirname, 'src/offscreen/index.html'),
+        blocked: resolve(import.meta.dirname, 'src/blocked/index.html'),
+        arc: resolve(import.meta.dirname, 'src/arc/index.html'),
+      },
       output: {
         assetFileNames: 'assets/[name]-[hash][extname]',
         chunkFileNames: 'assets/[name]-[hash].js',

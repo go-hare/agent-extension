@@ -115,7 +115,6 @@ export function useSession(): SessionState {
   const turnToolNamesRef = useRef<string[]>([]);
   /** Anchored tab id for group-title prefixes (official ⌛/🔔/✅). */
   const tabIdRef = useRef<number | null>(null);
-
   // ── 锚定当前 tab ──
   //
   // 侧栏是 per-window 的，用户切 tab 时 agent 应该跟着切。
@@ -212,6 +211,7 @@ export function useSession(): SessionState {
     const port = chrome.runtime.connect({ name: 'sidepanel' });
 
     // Official Stop Claude pill on the page → STOP_AGENT → sidepanel aborts.
+    // MCP permissions use a focused mcpPermissionOnly popup (not this panel).
     const onRuntimeMsg = (msg: { type?: string }) => {
       if (msg?.type === 'STOP_AGENT_REQUEST') {
         stopRef.current?.();
@@ -549,6 +549,7 @@ export function useSession(): SessionState {
   const answer = useCallback(
     (toolUseId: string, granted: boolean, scope: PermissionScope) => {
       setItems((prev) => resolvePermission(prev, toolUseId, granted, scope));
+      // Chat path only — Open-MCP uses the mcpPermissionOnly popup window.
       void answerPermission(toolUseId, granted, scope);
     },
     [],

@@ -42,7 +42,19 @@ export interface CheckOptions {
    * 用于模型明显要做高风险动作、或者用户开了 forcePrompt。
    */
   force?: boolean;
+  /**
+   * Official ONCE grant key (tool_use id). MCP empty PM matches grants by this id.
+   */
+  toolUseId?: string;
 }
+
+export type PermissionManagerOptions = {
+  /**
+   * Official open-MCP: `new WN(() => !1, {})` — no chat always/turn/skip auto-allow.
+   * Only operable/deny/allow-list gates + per-toolUseId ONCE grants.
+   */
+  isolated?: boolean;
+};
 
 /**
  * 域名匹配：精确相等或者是子域。
@@ -93,17 +105,26 @@ export function isOperableUrl(url: string | undefined): boolean {
 }
 
 export class PermissionManager {
+  /** Official MCP empty PM — never auto-allow from chat always/skip/turn storage. */
+  private readonly isolated: boolean;
+
   /** 当前 turn id。换 turn 时 turn 级授权作废。 */
   private turnId = '';
 
-  /** 永久授权（写 storage.local） */
+  /** 永久授权（写 storage.local） — unused when isolated. */
   private granted: GrantMap = {};
 
-  /** 本 turn 授权：`${host}:${permission}` */
+  /** 本 turn 授权：`${host}:${permission}` — unused when isolated. */
   private turnGrants = new Set<string>();
 
   /** 本 turn 拒绝：同上。拒绝比同意更持久 —— 见类注释规则 2。 */
   private turnDenials = new Set<string>();
+
+  /**
+   * Official qI.ONCE grants keyed by toolUseId (MCP grant-then-retry).
+   * Value: hostnames (netloc only — official grant has no permission type).
+   */
+  private onceByToolUseId = new Map<string, Set<string>>();
 
   /** 用户在设置里明确拉黑的域名 */
   private deniedDomains: string[] = [];
@@ -123,11 +144,21 @@ export class PermissionManager {
     { resolve: (r: { granted: boolean; scope: PermissionScope }) => void; permission: Permission; host: string }
   >();
 
+  constructor(opts: PermissionManagerOptions = {}) {
+    this.isolated = Boolean(opts.isolated);
+  }
+
   async init(): Promise<void> {
-    this.granted = await get<GrantMap>(STORAGE_KEYS.GRANTED_PERMISSIONS, {});
     const s = peekSettings();
     this.deniedDomains = s.deniedDomains ?? [];
     this.allowedDomains = s.allowedDomains ?? [];
+    if (this.isolated) {
+      // Official empty PM: do not load chat always / turn grants.
+      this.granted = {};
+      this.turnGrants.clear();
+      return;
+    }
+    this.granted = await get<GrantMap>(STORAGE_KEYS.GRANTED_PERMISSIONS, {});
     const turn = await get<string[]>(SESSION_KEYS.TURN_APPROVED, [], 'session');
     this.turnGrants = new Set(turn);
   }
@@ -138,11 +169,33 @@ export class PermissionManager {
     this.turnGrants.clear();
     this.turnDenials.clear();
     this.planApprovedThisTurn = false;
-    await set(SESSION_KEYS.TURN_APPROVED, [], 'session');
+    this.onceByToolUseId.clear();
+    if (!this.isolated) {
+      await set(SESSION_KEYS.TURN_APPROVED, [], 'session');
+    }
     // 设置可能被改过（用户在配置页加了黑名单），每轮重读
     const s = peekSettings();
     this.deniedDomains = s.deniedDomains ?? [];
     this.allowedDomains = s.allowedDomains ?? [];
+  }
+
+  /**
+   * Official grantPermission({type:"netloc", netloc}, ONCE, toolUseId, origin).
+   * Scope is **host-only** (no permission type). findApplicablePermission
+   * matches toolUseId + netloc and consumes the ONCE grant on first hit.
+   */
+  grantOnce(toolUseId: string, host: string, _permission?: Permission): void {
+    if (!toolUseId || !host) return;
+    const h = host.toLowerCase();
+    const setFor = this.onceByToolUseId.get(toolUseId) ?? new Set<string>();
+    setFor.add(h);
+    this.onceByToolUseId.set(toolUseId, setFor);
+  }
+
+  /** Drop ONCE grants for a finished tool_use (or all if id omitted). */
+  clearOnceGrants(toolUseId?: string): void {
+    if (toolUseId) this.onceByToolUseId.delete(toolUseId);
+    else this.onceByToolUseId.clear();
   }
 
   get currentTurnId(): string {
@@ -248,6 +301,16 @@ export class PermissionManager {
 
     const key = `${host}:${permission}`;
 
+    // Official MCP ONCE: toolUseId + netloc match, then consume (revoke).
+    if (opts.toolUseId && host) {
+      const once = this.onceByToolUseId.get(opts.toolUseId);
+      if (once?.has(host)) {
+        once.delete(host);
+        if (once.size === 0) this.onceByToolUseId.delete(opts.toolUseId);
+        return { allowed: true, needsPrompt: false };
+      }
+    }
+
     // 本 turn 已经被拒过就别再问了 —— 反复弹窗是一种胁迫。
     if (this.turnDenials.has(key)) {
       return {
@@ -271,7 +334,30 @@ export class PermissionManager {
       permission === PERMISSION.UPLOAD_IMAGE ||
       permission === PERMISSION.READ_NETWORK_REQUESTS;
     const mustAsk =
-      opts.force || settings.forcePrompt || irreversible || sensitive || neverSkip;
+      opts.force ||
+      (!this.isolated && settings.forcePrompt) ||
+      irreversible ||
+      sensitive ||
+      neverSkip;
+
+    /*
+     * Official open-MCP empty PM (`new WN(() => !1, {})`):
+     * never auto-allow from chat always / turn storage / "Act without asking".
+     * Only ONCE grants (above) or an explicit prompt.
+     */
+    if (this.isolated) {
+      return {
+        allowed: false,
+        needsPrompt: true,
+        reason: irreversible
+          ? `"${opts.actionLabel}" looks irreversible, so it needs fresh confirmation.`
+          : sensitive
+            ? `${host} handles money or credentials, so every action needs confirmation.`
+            : neverSkip
+              ? `"${permission}" always needs confirmation and cannot be auto-approved.`
+              : undefined,
+      };
+    }
 
     if (!mustAsk) {
       if (this.turnGrants.has(key)) return { allowed: true, needsPrompt: false };
@@ -331,28 +417,35 @@ export class PermissionManager {
     const key = `${entry.host}:${entry.permission}`;
 
     if (granted) {
-      if (scope === 'turn' || scope === 'domain') {
-        this.turnGrants.add(key);
-        await set(SESSION_KEYS.TURN_APPROVED, [...this.turnGrants], 'session');
-      }
-      // "always" 需要落盘，但有些权限不允许永久授权。
-      if (scope === 'always' || scope === 'domain') {
-        if (NO_PERSISTENT_GRANT.has(entry.permission)) {
-          // 降级成 turn 级，并且不写盘。用户看到的是"已允许"，
-          // 实际下次会话还会再问 —— 这是有意的保守行为。
+      // Official empty MCP PM: only ONCE via grantOnce(toolUseId) on retry —
+      // never sticky turn/always from the popup boolean response.
+      if (!this.isolated) {
+        if (scope === 'turn' || scope === 'domain') {
           this.turnGrants.add(key);
           await set(SESSION_KEYS.TURN_APPROVED, [...this.turnGrants], 'session');
-        } else if (scope === 'always') {
-          const list = this.granted[entry.host] ?? [];
-          if (!list.includes(entry.permission)) {
-            this.granted[entry.host] = [...list, entry.permission];
-            await set(STORAGE_KEYS.GRANTED_PERMISSIONS, this.granted);
+        }
+        // "always" 需要落盘，但有些权限不允许永久授权。
+        if (scope === 'always' || scope === 'domain') {
+          if (NO_PERSISTENT_GRANT.has(entry.permission)) {
+            // 降级成 turn 级，并且不写盘。用户看到的是"已允许"，
+            // 实际下次会话还会再问 —— 这是有意的保守行为。
+            this.turnGrants.add(key);
+            await set(SESSION_KEYS.TURN_APPROVED, [...this.turnGrants], 'session');
+          } else if (scope === 'always') {
+            const list = this.granted[entry.host] ?? [];
+            if (!list.includes(entry.permission)) {
+              this.granted[entry.host] = [...list, entry.permission];
+              await set(STORAGE_KEYS.GRANTED_PERMISSIONS, this.granted);
+            }
           }
         }
       }
     } else if (entry.permission !== PERMISSION.PLAN_APPROVAL) {
-      // Plan rejection must not sticky-deny re-planning this turn.
-      this.turnDenials.add(key);
+      // Chat: sticky deny for the turn. Official MCP ONCE deny does not sticky
+      // (denyPermission returns early for ONCE) — next tool_request may re-prompt.
+      if (!this.isolated) {
+        this.turnDenials.add(key);
+      }
     }
 
     entry.resolve({ granted, scope });
@@ -366,7 +459,10 @@ export class PermissionManager {
   /** turn 被用户中断时，把所有挂起的请求当作拒绝解开，避免 Promise 永久悬挂。 */
   abortAll(): void {
     for (const [id, entry] of this.pending) {
-      this.turnDenials.add(`${entry.host}:${entry.permission}`);
+      // Chat sticky-denies; official MCP ONCE deny does not.
+      if (!this.isolated) {
+        this.turnDenials.add(`${entry.host}:${entry.permission}`);
+      }
       entry.resolve({ granted: false, scope: 'once' });
       this.pending.delete(id);
     }
@@ -397,6 +493,12 @@ export class PermissionManager {
 
 /** 单例。侧栏和 SW 各有一份（不同 JS 上下文），靠 storage 保持一致。 */
 export const permissionManager = new PermissionManager();
+
+/**
+ * Official open-MCP permission manager: empty sticky grants, ONCE-only after allow.
+ * Lives only in the service worker with the native bridge (not the sidepanel).
+ */
+export const mcpPermissionManager = new PermissionManager({ isolated: true });
 
 /** 供 UI 展示：这个权限允许哪些授权范围。 */
 export function availableScopes(permission: Permission): PermissionScope[] {

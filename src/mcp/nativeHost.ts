@@ -17,7 +17,13 @@
 
 import { handleNativeMessage, type NativeInbound, type NativeOutbound } from './bridge';
 import { setMcpConnected } from './group';
+import {
+  startMcpTabGroupListener,
+  stopMcpTabGroupListener,
+} from './tabGroupListener';
+import { abortAllMcpPermissions } from './permissionBridge';
 import { detachAll } from '@/cdp/session';
+import { pageUrl } from '@/pages/paths';
 
 /** Official host names, tried in order. */
 export const NATIVE_HOSTS = [
@@ -48,6 +54,95 @@ let statusWaiter: {
   resolve: (v: NativeHostStatus) => void;
   timer: ReturnType<typeof setTimeout>;
 } | null = null;
+
+/** Dedupe official pairing_request (same request_id must not open twice). */
+let lastPairingRequestId: string | null = null;
+
+const BRIDGE_DISPLAY_NAME_KEY = 'bridgeDisplayName';
+
+async function loadBridgeDisplayName(): Promise<string | undefined> {
+  try {
+    const raw = await chrome.storage.local.get(BRIDGE_DISPLAY_NAME_KEY);
+    const n = raw[BRIDGE_DISPLAY_NAME_KEY];
+    return typeof n === 'string' && n.trim() ? n.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Official pairing_request → try sidepanel overlay first; else open pairing.html tab.
+ * Responses: pairing_confirmed / pairing_dismissed (handled in background).
+ */
+export async function handlePairingRequest(msg: {
+  request_id?: string;
+  client_type?: string;
+}): Promise<void> {
+  const requestId = msg.request_id;
+  if (!requestId) return;
+  if (requestId === lastPairingRequestId) return;
+  lastPairingRequestId = requestId;
+
+  const clientType = msg.client_type || 'desktop';
+  const currentName = (await loadBridgeDisplayName()) ?? '';
+
+  // Prefer in-panel prompt when sidepanel is open (official show_pairing_prompt).
+  try {
+    const res = (await chrome.runtime.sendMessage({
+      type: 'show_pairing_prompt',
+      request_id: requestId,
+      client_type: clientType,
+      current_name: currentName,
+    })) as { handled?: boolean } | undefined;
+    if (res?.handled) return;
+  } catch {
+    /* no sidepanel listener */
+  }
+
+  const url = pageUrl('pairing', {
+    request_id: requestId,
+    client_type: clientType,
+    current_name: currentName,
+  });
+  try {
+    await chrome.tabs.create({ url });
+  } catch (e) {
+    console.warn('[MCP] Failed to open pairing tab:', e);
+  }
+}
+
+/** Called from SW when pairing.html / sidepanel confirms. */
+export async function completePairingConfirm(
+  requestId: string,
+  name: string,
+): Promise<void> {
+  try {
+    await chrome.storage.local.set({ [BRIDGE_DISPLAY_NAME_KEY]: name });
+  } catch {
+    /* ignore */
+  }
+  // Official: pairing_response { request_id, device_id, name }
+  let deviceId = 'unknown';
+  try {
+    deviceId = chrome.runtime.id;
+  } catch {
+    /* ignore */
+  }
+  postOutbound({
+    type: 'pairing_response',
+    request_id: requestId,
+    device_id: deviceId,
+    name,
+  } as NativeOutbound);
+}
+
+export function completePairingDismiss(requestId: string): void {
+  postOutbound({
+    type: 'pairing_response',
+    request_id: requestId,
+    dismissed: true,
+  } as NativeOutbound);
+}
 
 export type NativeHostStatus = {
   nativeHostInstalled: boolean;
@@ -134,14 +229,24 @@ async function onHostMessage(raw: unknown): Promise<void> {
     return;
   }
 
+  // Official: pairing_request opens PairingPrompt (sidepanel or pairing.html).
+  if (type === 'pairing_request') {
+    await handlePairingRequest(msg as { request_id?: string; client_type?: string });
+    return;
+  }
+
   const out = await handleNativeMessage(msg);
   if (out) postOutbound(out);
 
   // Mirror session flags when host announces MCP session state.
+  // Group listener start/stop is also done inside handleNativeMessage for
+  // mcp_connected / mcp_disconnected; keep local SW flags here.
   if (type === 'mcp_connected') {
     mcpSessionConnected = true;
+    startMcpTabGroupListener();
   } else if (type === 'mcp_disconnected') {
     mcpSessionConnected = false;
+    stopMcpTabGroupListener();
     // Official: detach CDP when MCP session ends so debug banner clears.
     void detachAll().catch(() => {});
   }
@@ -232,7 +337,12 @@ export async function tryConnectNativeHost(): Promise<boolean> {
         port = null;
         connectedHostName = null;
         mcpSessionConnected = false;
+        stopMcpTabGroupListener();
         void setMcpConnected(false);
+        // Unblock any SW permission waiters; official ends the MCP session here.
+        void abortAllMcpPermissions().catch(() => {});
+        // Official mcp_disconnected path also detaches CDP.
+        void detachAll().catch(() => {});
         if (intentionalDisconnect) {
           intentionalDisconnect = false;
           return;
@@ -272,7 +382,9 @@ export function disconnectNativeHost(): void {
   // only after a successful connect; reset notFound so manual reconnect retries.
   notFoundStreak = 0;
   reconnectAttempt = 0;
+  stopMcpTabGroupListener();
   void setMcpConnected(false);
+  void detachAll().catch(() => {});
   try {
     old?.disconnect();
   } catch {

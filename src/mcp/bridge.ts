@@ -4,16 +4,19 @@
  * Desktop / Claude Code connect via chrome.runtime.connectNative and post:
  *   { type: 'tool_request', method: 'execute_tool', params: { tool, args, … } }
  *
- * Official SW (1.0.81) calls executeTool with source:"native-messaging", then
- * posts tool_response via ie({ content, is_error }).
+ * Official SW (1.0.81):
+ *  - empty permissionManager `new WN(() => !1, {})` (no chat always/skip)
+ *  - tool returns permission_required → popup → allowed boolean
+ *  - grantPermission ONCE for toolUseId → retry handleToolCall once
  *
- * We run the same tool registry the sidepanel uses. Permissions that need a
- * chat UI prompt are denied with a clear message (no sidepanel waiter in SW).
- * Skip-all permission mode still works for unattended automation.
+ * Nested `browser_batch` still fast-fails steps that need a fresh grant.
  */
 
 import { runTool, getTool } from '@/tools/registry';
-import { permissionManager } from '@/permissions/manager';
+import {
+  hostOf,
+  mcpPermissionManager,
+} from '@/permissions/manager';
 import { loadSettings } from '@/storage/settings';
 import type { Permission, ToolContext, ToolResult } from '@/shared/types';
 import { showIndicator, hideIndicator } from '@/tools/tabs';
@@ -25,6 +28,33 @@ import {
   getOrCreateSessionTabContext,
   setMcpConnected,
 } from './group';
+import {
+  startMcpTabGroupListener,
+  stopMcpTabGroupListener,
+} from './tabGroupListener';
+import {
+  abortAllMcpPermissions,
+  promptMcpPermission,
+} from './permissionBridge';
+
+/** One permission turn for the whole MCP native session (not per tool_request). */
+const MCP_SESSION_TURN_ID = 'mcp_session';
+let mcpSessionTurnReady = false;
+
+async function ensureMcpSessionTurn(): Promise<void> {
+  if (mcpSessionTurnReady) {
+    // Re-load deny/allow lists without clearing ONCE map mid-session.
+    await mcpPermissionManager.init();
+    return;
+  }
+  await mcpPermissionManager.startTurn(MCP_SESSION_TURN_ID);
+  mcpSessionTurnReady = true;
+}
+
+function resetMcpSessionTurn(): void {
+  mcpSessionTurnReady = false;
+  mcpPermissionManager.clearOnceGrants();
+}
 
 /**
  * Tools Desktop / Claude Code may invoke over the bridge.
@@ -83,6 +113,13 @@ export type NativeOutbound =
       type: 'tool_response';
       result?: { content: string | Array<{ type: string; text?: string }> };
       error?: { content: string | Array<{ type: string; text?: string }> };
+    }
+  | {
+      type: 'pairing_response';
+      request_id: string;
+      device_id?: string;
+      name?: string;
+      dismissed?: boolean;
     };
 
 const STICKY_DENY_SUFFIX =
@@ -177,7 +214,13 @@ function toolOkContent(msg: string): NativeOutbound {
 
 /**
  * Build a ToolContext for SW-side MCP runs.
- * requestPermission: auto-check only; if needsPrompt → deny (no chat UI here).
+ *
+ * Official shape:
+ *  - empty/isolated mcpPermissionManager (no chat always/skip)
+ *  - check with toolUseId so ONCE grants apply on retry
+ *  - needsPrompt → return decision (guard emits permissionRequired)
+ *  - bridge prompts + grantOnce + retries once
+ * Nested browser_batch still sets batchMode:true and fast-fails fresh prompts.
  */
 function makeMcpContext(opts: {
   tabId: number;
@@ -186,14 +229,20 @@ function makeMcpContext(opts: {
   turnId: string;
   signal: AbortSignal;
 }): ToolContext {
-  return {
+  const ctx: ToolContext = {
     tabId: opts.tabId,
     windowId: opts.windowId,
     turnId: opts.turnId,
     toolUseId: opts.toolUseId,
     signal: opts.signal,
-    batchMode: true,
+    batchMode: false,
+    // Official native-messaging path has no follow_a_plan gate.
+    skipPlanGate: true,
+    // Official: tools surface permission_required; bridge retries after grant.
+    mcpPermissionRequired: true,
+
     async requestPermission(
+      this: ToolContext,
       permission: Permission,
       detail: {
         actionLabel: string;
@@ -202,25 +251,37 @@ function makeMcpContext(opts: {
         actionData?: unknown;
       },
     ) {
-      await permissionManager.init();
+      await mcpPermissionManager.init();
       const url = detail.url ?? '';
-      const decision = permissionManager.check(url, permission, {
+      const decision = mcpPermissionManager.check(url, permission, {
         actionLabel: detail.actionLabel,
+        toolUseId: opts.toolUseId,
       });
-      if (decision.allowed && !decision.needsPrompt) {
-        return { allowed: true, needsPrompt: false };
+
+      if (decision.allowed) return decision;
+      if (!decision.needsPrompt) return decision;
+
+      // Match chat loop: batch nested steps must not hang on UI.
+      if (this.batchMode) {
+        return {
+          allowed: false,
+          needsPrompt: true,
+          reason:
+            `Permission required for "${detail.actionLabel}"` +
+            `${url ? ` (${url})` : ''}. Call this tool standalone (not inside ` +
+            `browser_batch) so the permission popup can Allow it, then retry the batch.`,
+        };
       }
+
+      // Surface permission_required to the bridge (do not wait here).
       return {
         allowed: false,
-        needsPrompt: false,
-        reason:
-          decision.reason ??
-          `Permission denied by user: "${permission}" for "${detail.actionLabel}" requires the ` +
-            `side panel Allow card. Open the extension side panel, set permission ` +
-            `mode to Skip (Act without asking), or pre-grant this site in Options — then retry from Desktop/MCP.`,
+        needsPrompt: true,
+        reason: decision.reason,
       };
     },
   };
+  return ctx;
 }
 
 /**
@@ -290,6 +351,44 @@ async function resolveTargetTab(params: {
   );
 }
 
+/**
+ * Serialize MCP tool_requests (official also fires async; concurrent CDP
+ * attaches on the same tab race). One-at-a-time keeps debugger + indicators stable.
+ */
+let mcpToolChain: Promise<void> = Promise.resolve();
+/** In-flight MCP tool executions (for sidepanel-disconnect detach policy). */
+let activeMcpTools = 0;
+
+export function hasActiveMcpTool(): boolean {
+  return activeMcpTools > 0;
+}
+
+function enqueueMcpTool<T>(fn: () => Promise<T>): Promise<T> {
+  const run = mcpToolChain.then(
+    async () => {
+      activeMcpTools += 1;
+      try {
+        return await fn();
+      } finally {
+        activeMcpTools = Math.max(0, activeMcpTools - 1);
+      }
+    },
+    async () => {
+      activeMcpTools += 1;
+      try {
+        return await fn();
+      } finally {
+        activeMcpTools = Math.max(0, activeMcpTools - 1);
+      }
+    },
+  );
+  mcpToolChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 export async function executeMcpTool(params: {
   toolName: string;
   args?: Record<string, unknown>;
@@ -298,8 +397,20 @@ export async function executeMcpTool(params: {
   clientId?: string;
   sessionScope?: { sessionId?: string; tabGroupId?: number; displayName?: string };
 }): Promise<NativeOutbound> {
+  return enqueueMcpTool(() => executeMcpToolInner(params));
+}
+
+async function executeMcpToolInner(params: {
+  toolName: string;
+  args?: Record<string, unknown>;
+  tabId?: number;
+  tabGroupId?: number;
+  clientId?: string;
+  sessionScope?: { sessionId?: string; tabGroupId?: number; displayName?: string };
+}): Promise<NativeOutbound> {
   await loadSettings();
-  await permissionManager.init();
+  // MCP uses isolated empty PM only (never chat permissionManager).
+  await mcpPermissionManager.init();
 
   const name = params.toolName;
 
@@ -424,10 +535,11 @@ export async function executeMcpTool(params: {
     return toolErrorContent(e instanceof Error ? e.message : String(e));
   }
 
-  const turnId = `mcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const toolUseId = `mcp_tu_${Date.now()}`;
+  // Official empty MCP PM session + per-toolUseId ONCE grants for retry.
+  const turnId = MCP_SESSION_TURN_ID;
+  const toolUseId = `mcp_tu_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const ac = new AbortController();
-  await permissionManager.startTurn(turnId);
+  await ensureMcpSessionTurn();
 
   // Official: MCP sessions pass isMcp so Stop pill is suppressed.
   const interactive = ![
@@ -442,17 +554,76 @@ export async function executeMcpTool(params: {
   }
 
   try {
-    const ctx = makeMcpContext({
-      tabId: target.tabId,
-      windowId: target.windowId,
-      toolUseId,
-      turnId,
-      signal: ac.signal,
-    });
     const args = { ...(params.args ?? {}) };
     if (args.tabId == null) args.tabId = target.tabId;
 
-    const result = await runTool(name, args, ctx);
+    const runOnce = () =>
+      runTool(
+        name,
+        args,
+        makeMcpContext({
+          tabId: target.tabId,
+          windowId: target.windowId,
+          toolUseId,
+          turnId,
+          signal: ac.signal,
+        }),
+      );
+
+    // ── first execute (official handleToolCall) ──
+    let result = await runOnce();
+
+    // Official: permission_required → onPermissionRequired(popup) →
+    // grantPermission(ONCE, toolUseId) → retry handleToolCall exactly once.
+    // If still permission_required after grant → hard error (no second popup).
+    if (result.permissionRequired && !result.error) {
+      const pr = result.permissionRequired;
+      if (ac.signal.aborted) {
+        return toolErrorContent('Permission wait aborted.');
+      }
+
+      const decision = await promptMcpPermission({
+        toolUseId,
+        permission: pr.permission,
+        detail: {
+          actionLabel: pr.actionLabel,
+          url: pr.url,
+          screenshot: pr.screenshot,
+          actionData: pr.actionData,
+        },
+        windowId: target.windowId,
+        tabId: target.tabId,
+        signal: ac.signal,
+      });
+
+      if (!decision.allowed) {
+        // Official: error "Permission denied by user" (+ sticky suffix in tool_response).
+        return toolErrorContent('Permission denied by user');
+      }
+
+      // Official: grantPermission({type:"netloc", netloc:host}, qI.ONCE, toolUseId, origin)
+      // ONCE is host-scoped only — no permission type on the grant.
+      const h = hostOf(pr.url);
+      if (h) {
+        mcpPermissionManager.grantOnce(toolUseId, h, pr.permission);
+      }
+
+      // ── retry_execute (official second handleToolCall) ──
+      result = await runOnce();
+
+      if (result.permissionRequired) {
+        // Official throws: "Permission still required after granting"
+        return toolErrorContent('Permission still required after granting');
+      }
+    }
+
+    // Defensive: bare permissionRequired without error must not look like success.
+    if (result.permissionRequired && !result.error) {
+      return toolErrorContent(
+        `Permission required for "${result.permissionRequired.actionLabel}" was not resolved.`,
+      );
+    }
+
     if (result.error) {
       return toolErrorContent(formatResultText(result));
     }
@@ -465,6 +636,7 @@ export async function executeMcpTool(params: {
       `Tool execution failed: ${e instanceof Error ? e.message : String(e)}`,
     );
   } finally {
+    mcpPermissionManager.clearOnceGrants(toolUseId);
     if (interactive) {
       void hideIndicator(target.tabId).catch(() => {});
     }
@@ -490,12 +662,20 @@ export async function handleNativeMessage(
   }
 
   if (type === 'mcp_connected') {
+    // Official: set flag + initialize group manager + startTabGroupChangeListener.
+    // Do NOT createIfEmpty here — Desktop creates groups via tabs_context_mcp.
     await setMcpConnected(true);
+    resetMcpSessionTurn();
+    await ensureMcpSessionTurn();
+    startMcpTabGroupListener();
     return null;
   }
 
   if (type === 'mcp_disconnected') {
     await setMcpConnected(false);
+    stopMcpTabGroupListener();
+    await abortAllMcpPermissions();
+    resetMcpSessionTurn();
     return null;
   }
 

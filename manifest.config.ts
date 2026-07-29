@@ -146,6 +146,8 @@ export default defineManifest({
         // Tab group onboarding / secondary-tab art
         'public/img/tabgrp.svg',
         'public/img/tabgrp_dark.svg',
+        // Offscreen notification sound (official OFFSCREEN_PLAY_SOUND)
+        'public/sounds/notification.mp3',
       ],
       use_dynamic_url: false,
     },

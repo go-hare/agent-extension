@@ -42,6 +42,11 @@ export interface PermissionBubbleProps {
    * 流内历史行仍可渲染 answered 态。
    */
   compactAnswered?: boolean;
+  /**
+   * Official EZ / CZ `disableAlwaysAllow` — hide Always row + Cmd/Ctrl+Enter always.
+   * Used by mcpPermissionOnly popup (MCP wire is boolean-only / ONCE).
+   */
+  disableAlwaysAllow?: boolean;
 }
 
 type ActiveChoice = 'once' | 'deny' | 'always' | 'approve' | 'reject' | null;
@@ -76,13 +81,15 @@ export function PermissionBubble({
   item,
   onAnswer,
   compactAnswered = true,
+  disableAlwaysAllow = false,
 }: PermissionBubbleProps) {
   const t = useUi();
   const { request, answer } = item;
   const answered = answer !== undefined;
 
   const scopes = useMemo(() => availableScopes(request.permission), [request.permission]);
-  const canAlways = scopes.includes('always');
+  // Official disableAlwaysAllow (MCP popup / enterprise) hides Always entirely.
+  const canAlways = !disableAlwaysAllow && scopes.includes('always');
   const isPlan = request.permission === PERMISSION.PLAN_APPROVAL;
   const plan = useMemo(
     () => (isPlan ? readPlanStructure(request.actionData) : null),
@@ -282,6 +289,19 @@ export function PermissionBubble({
   // We still accept request.screenshot for older emitters.
   const shotUrl = readScreenshot(request);
 
+  // Official CZ: display host from new URL(url).host (includes port when present).
+  let displayHost = request.host || '';
+  if (request.url) {
+    try {
+      displayHost = new URL(request.url).host;
+    } catch {
+      /* keep request.host */
+    }
+  }
+
+  // Official CZ / MZ card body. EZ (mcpPermissionOnly) wraps with its own
+  // max-w-sm border rounded-[14px]; chat sticky also supplies a shell.
+  // Keep bg-bg-000 rounded so chat stream cards still look complete.
   return (
     <div className="bg-bg-000 rounded-[14px]">
       <div className="flex items-center gap-2 py-[10px] px-4">
@@ -297,9 +317,9 @@ export function PermissionBubble({
           <p className="font-base-bold text-text-100">
             {t.claudeWantsTo(verbFor(request.permission, t))}
           </p>
-          {request.host ? (
+          {displayHost ? (
             <p className="font-claude-response-code text-text-200" dir="ltr">
-              {request.host}
+              {displayHost}
             </p>
           ) : null}
         </div>
@@ -332,7 +352,12 @@ export function PermissionBubble({
         ) : null}
       </div>
 
-      <Choices canAlways={canAlways} active={active} onPick={commit} />
+      <Choices
+        canAlways={canAlways}
+        disableAlwaysAllow={disableAlwaysAllow}
+        active={active}
+        onPick={commit}
+      />
     </div>
   );
 }
@@ -582,10 +607,12 @@ export function PermissionStickyShell({
 /** Official CZ action choices (site permissions only — plan uses eS branch). */
 function Choices({
   canAlways,
+  disableAlwaysAllow,
   active,
   onPick,
 }: {
   canAlways: boolean;
+  disableAlwaysAllow: boolean;
   active: ActiveChoice;
   onPick: (granted: boolean, scope: PermissionScope, choice: ActiveChoice) => void;
 }) {
@@ -606,9 +633,18 @@ function Choices({
         <EscKeyIcon className="text-text-500" />
       </ScopeButton>
 
+      {/*
+        Official CZ (disableAlwaysAllow=l):
+          always render divider after Decline;
+          l ? "Site-level permissions are disabled for this site."
+            : Always-allow row (or disabled copy when always not in scopes).
+        MCP EZ passes disableAlwaysAllow — Always click/hotkey still no-ops.
+      */}
       <div className="border-t-[0.5px] border-border-300 my-3 -mx-3" />
 
-      {canAlways ? (
+      {disableAlwaysAllow ? (
+        <p className="font-small text-text-500 px-1 mt-2">{t.sitePermissionsDisabled}</p>
+      ) : canAlways ? (
         <ScopeButton
           isActive={active === 'always'}
           height="55px"

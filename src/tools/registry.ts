@@ -37,6 +37,7 @@ import {
   withIndicatorHidden,
 } from './tabs';
 import { getLastScreenshot } from '@/media/catalog';
+import { isHardBlockedUrl, maybeBlockedInterstitial } from '@/safety/blocklist';
 import {
   type AnthropicToolSchema,
   computerInput,
@@ -129,6 +130,30 @@ async function guard(
   });
 
   if (!decision.allowed) {
+    // Official MCP batch: nested steps that need a fresh grant fast-fail
+    // with a standalone hint — never hang on popup, never silent-success.
+    if (decision.needsPrompt && ctx.batchMode) {
+      const hostHint = url ? ` (${url})` : '';
+      return {
+        error:
+          decision.reason ??
+          `permission_required${hostHint ? `: ${url}` : ''}` +
+            ` — call this tool standalone (not in browser_batch) so the user is prompted.`,
+      };
+    }
+    // Official MCP standalone: bubble permission_required so the bridge can
+    // prompt → grantOnce → retry handleToolCall once (not wait inside the tool).
+    if (decision.needsPrompt && ctx.mcpPermissionRequired) {
+      return {
+        permissionRequired: {
+          permission,
+          url,
+          actionLabel,
+          screenshot: extra.screenshot,
+          actionData: extra.actionData,
+        },
+      };
+    }
     return {
       error:
         decision.reason ??
@@ -870,6 +895,16 @@ const navigateTool: Tool = {
       if (bad) return { error: bad };
     }
 
+    // Official category1 path: rewrite hard-blocked URLs to blocked.html.
+    const navigateTarget =
+      !isHistory && isHardBlockedUrl(target)
+        ? (maybeBlockedInterstitial(target) ?? target)
+        : target;
+    if (!isHistory && navigateTarget !== target) {
+      // Still ask for navigate permission on the *original* URL intent, then
+      // land on the interstitial so the model sees the safety page.
+    }
+
     const blocked = await guard(
       ctx,
       tabId,
@@ -891,7 +926,7 @@ const navigateTool: Tool = {
           func: (dir: string) => (dir === 'back' ? history.back() : history.forward()),
         });
       } else {
-        await chrome.tabs.update(tabId, { url: target });
+        await chrome.tabs.update(tabId, { url: navigateTarget });
       }
 
       const status = await waitForLoad(tabId);
@@ -1549,9 +1584,13 @@ export async function runTool(
     };
   }
 
-  // Official follow_a_plan hard gate — before parse/run so the model always sees the same error.
-  const planBlocked = checkPlanGate(name);
-  if (planBlocked) return planBlocked;
+  // Official follow_a_plan hard gate — chat only.
+  // Open-MCP (skipPlanGate) uses a separate permission path without plan-first
+  // (official native-messaging permissionManager has no HG gate).
+  if (!ctx.skipPlanGate) {
+    const planBlocked = checkPlanGate(name);
+    if (planBlocked) return planBlocked;
+  }
 
   const parsed = tool.parse(rawInput);
   if (!parsed.ok) return { error: parsed.error };

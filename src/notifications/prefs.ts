@@ -52,4 +52,5 @@ export async function notifyTaskDone(opts: {
       /* blocked / unavailable */
     }
   }
+  // Sound is triggered by SW on SHOW_NOTIFICATION (offscreen OFFSCREEN_PLAY_SOUND).
 }

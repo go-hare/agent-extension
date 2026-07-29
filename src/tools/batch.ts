@@ -100,10 +100,21 @@ export function createBrowserBatchTool(): RegTool {
 
         const result = await runTool(step.name, step.input, batchCtx);
 
+        // Defensive: bare permissionRequired must never count as OK under batch
+        // (MCP guard should already convert to error when batchMode).
+        if (result.permissionRequired && !result.error) {
+          const pr = result.permissionRequired;
+          const urlHint = pr.url ? `: ${pr.url}` : '';
+          result.error =
+            `permission_required${urlHint} — call "${step.name}" standalone ` +
+            `(not in browser_batch) so the user is prompted.`;
+        }
+
         if (result.error) {
-          const needsPerm = /did not grant permission|needs permission|declined|standalone/i.test(
-            result.error,
-          );
+          const needsPerm =
+            /did not grant permission|needs permission|declined|standalone|permission_required/i.test(
+              result.error,
+            );
           const hint = needsPerm
             ? ` Call "${step.name}" standalone (not in browser_batch) so the user can approve, then batch the rest.`
             : '';

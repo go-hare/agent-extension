@@ -22,12 +22,22 @@ import {
 } from '@/scheduling/store';
 import {
   checkNativeHostStatus,
+  completePairingConfirm,
+  completePairingDismiss,
   getNativeHostStatusSnapshot,
   installNativeHost,
   postMcpNotification,
   reconnectNativeHost,
   tryConnectNativeHost,
 } from '@/mcp/nativeHost';
+import { hasActiveMcpTool } from '@/mcp/bridge';
+import {
+  handleMcpPermissionResponse,
+  hasInflightMcpPermission,
+  type McpPermissionResponseMsg,
+} from '@/mcp/permissionBridge';
+import type { PermissionScope } from '@/shared/types';
+import { ensureOffscreenDocument } from '@/offscreen/ensure';
 
 // ───────────────────────── 侧栏开关 ─────────────────────────
 
@@ -99,10 +109,13 @@ chrome.action.onClicked.addListener((tab) => {
 installCdpListeners();
 
 /**
- * 侧栏断开 = 任务结束 = 必须 detach。
+ * 侧栏断开 = 聊天任务结束 = 通常必须 detach。
  *
  * 不 detach 的话，页面顶部的"XX 正在调试此浏览器"横幅会一直挂着，
  * 用户会以为扩展还在偷偷操作。
+ *
+ * 例外：Open-MCP 工具在 SW 里跑，侧栏关掉不能拆掉 MCP 正在用的 debugger；
+ * 等 MCP 会话结束 / 权限超时后再由 bridge / nativeHost 清理。
  *
  * 同时计数 sidepanel port，供定时任务决定是入队还是只发通知。
  */
@@ -113,15 +126,18 @@ chrome.runtime.onConnect.addListener((port) => {
   sidepanelPorts += 1;
   port.onDisconnect.addListener(() => {
     sidepanelPorts = Math.max(0, sidepanelPorts - 1);
+    if (sidepanelPorts > 0) return;
+    // Keep CDP while an MCP tool (or its Allow card) is in flight in the SW.
+    // Idle MCP host connection alone does not block detach — chat banners clear.
+    if (hasInflightMcpPermission() || hasActiveMcpTool()) return;
     void detachAll();
   });
 });
-
 // ───────────────────────── 消息 ─────────────────────────
 
 type Msg =
   | { type: 'OPEN_OPTIONS' }
-  | { type: 'PLAY_NOTIFICATION_SOUND' }
+  | { type: 'PLAY_NOTIFICATION_SOUND'; volume?: number }
   | { type: 'SHOW_NOTIFICATION'; title: string; message: string }
   | { type: 'RESIZE_WINDOW'; windowId: number; width: number; height: number }
   // Official open MCP status (Desktop / Claude Code native host)
@@ -129,6 +145,21 @@ type Msg =
   | { type: 'CHECK_NATIVE_HOST_STATUS' | 'check_native_host_status' }
   | { type: 'RECONNECT_NATIVE_HOST' | 'reconnect_native_host' }
   | { type: 'SEND_MCP_NOTIFICATION'; method?: string; params?: unknown }
+  // Official pairing.html / sidepanel PairingPrompt
+  | { type: 'pairing_confirmed'; request_id?: string; name?: string }
+  | { type: 'pairing_dismissed'; request_id?: string }
+  | { type: 'show_pairing_prompt'; request_id?: string; client_type?: string; current_name?: string }
+  // Open-MCP → mcpPermissionOnly popup (official boolean response)
+  | {
+      type: 'MCP_PERMISSION_RESPONSE';
+      toolUseId?: string;
+      granted?: boolean;
+      scope?: PermissionScope;
+      requestId?: string;
+      allowed?: boolean;
+    }
+  // Offscreen keepalive (official SW_KEEPALIVE)
+  | { type: 'SW_KEEPALIVE' }
   // Teach Claude ephemeral inject messages; SW ignores so sidepanel receives them.
   | { type: 'ELEMENT_SELECTION' }
   | { type: 'KEYSTROKE_UPDATE' }
@@ -147,6 +178,33 @@ chrome.runtime.onMessage.addListener((msg: Msg, sender, sendResponse) => {
       sendResponse({ ok: true });
       return false;
 
+    case 'SW_KEEPALIVE':
+      // Touch from offscreen doc — keeps this SW event loop warm.
+      sendResponse({ ok: true });
+      return false;
+
+    case 'PLAY_NOTIFICATION_SOUND': {
+      const volume = msg.volume ?? 0.5;
+      void (async () => {
+        try {
+          await ensureOffscreenDocument();
+          const audioUrl = chrome.runtime.getURL('public/sounds/notification.mp3');
+          const res = await chrome.runtime.sendMessage({
+            type: 'OFFSCREEN_PLAY_SOUND',
+            audioUrl,
+            volume,
+          });
+          sendResponse(res ?? { success: true });
+        } catch (e) {
+          sendResponse({
+            success: false,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
+      })();
+      return true;
+    }
+
     case 'SHOW_NOTIFICATION':
       void chrome.notifications.create({
         type: 'basic',
@@ -154,8 +212,55 @@ chrome.runtime.onMessage.addListener((msg: Msg, sender, sendResponse) => {
         title: msg.title,
         message: msg.message,
       });
+      // Also play sound via offscreen when available (best-effort).
+      void chrome.runtime
+        .sendMessage({ type: 'PLAY_NOTIFICATION_SOUND', volume: 0.5 })
+        .catch(() => {});
       sendResponse({ ok: true });
       return false;
+
+    case 'pairing_confirmed': {
+      const requestId = msg.request_id;
+      const name = msg.name;
+      if (requestId && name) {
+        void completePairingConfirm(requestId, name).then(() =>
+          sendResponse({ ok: true }),
+        );
+        return true;
+      }
+      sendResponse({ ok: false, error: 'missing request_id or name' });
+      return false;
+    }
+
+    case 'pairing_dismissed': {
+      const requestId = msg.request_id;
+      if (requestId) completePairingDismiss(requestId);
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    case 'show_pairing_prompt':
+      // Sidepanel owns the in-panel PairingPrompt and must be the only
+      // responder ({ handled: true }). If we answer here, we steal the
+      // response and nativeHost never falls through to pairing.html.
+      return false;
+
+    case 'MCP_PERMISSION_RESPONSE': {
+      const m = msg as McpPermissionResponseMsg;
+      if (!m.toolUseId && !m.requestId) {
+        sendResponse({ ok: false, error: 'missing toolUseId/requestId' });
+        return false;
+      }
+      void handleMcpPermissionResponse(m).then(
+        (ok) => sendResponse({ ok }),
+        (e: unknown) =>
+          sendResponse({
+            ok: false,
+            error: e instanceof Error ? e.message : String(e),
+          }),
+      );
+      return true;
+    }
 
     case 'RESIZE_WINDOW':
       void chrome.windows
@@ -266,6 +371,8 @@ chrome.runtime.onMessage.addListener((msg: Msg, sender, sendResponse) => {
       return false;
 
     default:
+      // Offscreen-targeted messages (OFFSCREEN_PLAY_SOUND / GENERATE_GIF /
+      // REVOKE_BLOB_URL) are handled by the offscreen document; SW no-ops.
       void sender;
       return false;
   }
@@ -311,3 +418,5 @@ void reclaimStaleSessions();
 void resyncAllAlarms();
 // Open MCP: connectNative to Desktop / Claude Code hosts when present.
 installNativeHost();
+// Official offscreen doc: keepalive + sound + GENERATE_GIF.
+void ensureOffscreenDocument();

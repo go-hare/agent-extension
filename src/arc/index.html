@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en" data-theme="claude" data-mode="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Claude Agent</title>
+    <!--
+      Official arc.html is a spinner shell for Arc browser entry.
+      We keep the same shell and open the side panel / options from main.ts.
+    -->
+  </head>
+  <body class="bg-bg-100 text-text-100">
+    <div id="root">
+      <div
+        class="flex flex-col items-center justify-center h-screen bg-bg-100 relative overflow-hidden"
+      >
+        <div
+          class="animate-spin rounded-full h-8 w-8 border-b-2 border-text-100"
+        ></div>
+      </div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
