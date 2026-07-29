@@ -1,7 +1,7 @@
 {
   "name": "my-agent-extension",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.81",
   "type": "module",
   "description": "Browser agent extension (MV3) — functional clone of Claude in Chrome 1.0.81",
   "scripts": {
