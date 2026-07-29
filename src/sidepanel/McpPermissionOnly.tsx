@@ -38,12 +38,8 @@ function buildItem(request: PermissionRequest): PermissionItem {
 
 function WaitingCopy() {
   const t = useUi();
-  // Official id 6x5YwESShd — fall back to English if locale pack omits it.
   return (
-    <div className="text-text-200 text-sm">
-      {(t as { waitingForPermission?: string }).waitingForPermission ??
-        'Waiting for permission request...'}
-    </div>
+    <div className="text-text-200 text-sm">{t.waitingForPermission}</div>
   );
 }
 

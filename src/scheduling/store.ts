@@ -7,8 +7,12 @@ export interface Schedule {
   /** human label */
   title: string;
   prompt: string;
-  /** every N minutes (minimum 1) */
+  /** every N minutes (minimum 1). For once-shots, still used as delay. */
   everyMinutes: number;
+  /**
+   * Official convert frequency `once`: fire once then disable (no periodInMinutes).
+   */
+  once?: boolean;
   enabled: boolean;
   tabUrl?: string;
   nextRun: number;
@@ -36,6 +40,8 @@ export async function createSchedule(input: {
   prompt: string;
   everyMinutes: number;
   tabUrl?: string;
+  /** Official frequency once — single fire, then auto-disable. */
+  once?: boolean;
 }): Promise<Schedule> {
   const items = await listSchedules();
   const everyMinutes = Math.max(1, Math.round(input.everyMinutes));
@@ -45,6 +51,7 @@ export async function createSchedule(input: {
     title: input.title,
     prompt: input.prompt,
     everyMinutes,
+    once: Boolean(input.once),
     enabled: true,
     tabUrl: input.tabUrl,
     nextRun: now + everyMinutes * 60_000,
@@ -95,11 +102,18 @@ export async function syncAlarm(s: Schedule): Promise<void> {
     /* ignore */
   }
   if (!s.enabled) return;
-  // Chrome alarms: periodInMinutes min is 1 in practice for persistent
-  await chrome.alarms.create(name, {
-    delayInMinutes: Math.max(1, s.everyMinutes),
-    periodInMinutes: Math.max(1, s.everyMinutes),
-  });
+  // Chrome alarms: periodInMinutes min is 1 for recurring.
+  // Official frequency once → delay only (no period); handler disables after fire.
+  if (s.once) {
+    await chrome.alarms.create(name, {
+      delayInMinutes: Math.max(1, s.everyMinutes),
+    });
+  } else {
+    await chrome.alarms.create(name, {
+      delayInMinutes: Math.max(1, s.everyMinutes),
+      periodInMinutes: Math.max(1, s.everyMinutes),
+    });
+  }
 }
 
 export async function resyncAllAlarms(): Promise<void> {

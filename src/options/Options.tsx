@@ -64,6 +64,9 @@ export function Options() {
   const [probe, setProbe] = useState<Probe>({ state: 'idle' });
   const [modelProbe, setModelProbe] = useState<Probe>({ state: 'idle' });
   const [grants, setGrants] = useState<Array<{ host: string; permissions: Permission[] }>>([]);
+  const [domainTransitions, setDomainTransitions] = useState<
+    Array<{ fromDomain: string; toDomain: string }>
+  >([]);
   const [flash, setFlash] = useState<string | null>(null);
   const [shortcuts, setShortcuts] = useState<Shortcut[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
@@ -93,6 +96,7 @@ export function Options() {
       document.title = getUiStrings(s.locale).optionsTitle;
       await permissionManager.init();
       setGrants(permissionManager.listGrants());
+      setDomainTransitions(permissionManager.listDomainTransitions());
       setShortcuts(await listShortcuts());
       setSchedules(await listSchedules());
       setNotifPref(await loadNotificationsPref());
@@ -301,6 +305,8 @@ export function Options() {
         modelProbe={modelProbe}
         grants={grants}
         setGrants={setGrants}
+        domainTransitions={domainTransitions}
+        setDomainTransitions={setDomainTransitions}
         flash={flash}
         shortcuts={shortcuts}
         setShortcuts={setShortcuts}
@@ -340,6 +346,8 @@ function OptionsBody({
   modelProbe,
   grants,
   setGrants,
+  domainTransitions,
+  setDomainTransitions,
   flash,
   shortcuts,
   setShortcuts,
@@ -376,6 +384,10 @@ function OptionsBody({
   grants: Array<{ host: string; permissions: Permission[] }>;
   setGrants: React.Dispatch<
     React.SetStateAction<Array<{ host: string; permissions: Permission[] }>>
+  >;
+  domainTransitions: Array<{ fromDomain: string; toDomain: string }>;
+  setDomainTransitions: React.Dispatch<
+    React.SetStateAction<Array<{ fromDomain: string; toDomain: string }>>
   >;
   flash: string | null;
   shortcuts: Shortcut[];
@@ -830,12 +842,52 @@ function OptionsBody({
             <button
               type="button"
               onClick={() => {
-                void permissionManager.revokeAll().then(() => setGrants([]));
+                void permissionManager.revokeAll().then(() => {
+                  setGrants([]);
+                  setDomainTransitions([]);
+                });
               }}
               className={cn(BTN_GHOST, 'mt-2')}
             >
               Revoke all
             </button>
+          </div>
+        )}
+      </Section>
+
+      {/* Official options: domain_transition always grants (from → to) */}
+      <Section title={t.sectionDomainTransitions} note={t.sectionDomainTransitionsNote}>
+        {domainTransitions.length === 0 ? (
+          <p className="font-base flex items-center gap-2 text-sm text-text-400">
+            <ShieldIcon size={14} />
+            No cross-site pairs remembered.
+          </p>
+        ) : (
+          <div className="space-y-1.5">
+            {domainTransitions.map((g) => (
+              <div
+                key={`${g.fromDomain}\u2192${g.toDomain}`}
+                className="flex items-start justify-between gap-3 rounded-lg border-[0.5px] border-border-300 bg-bg-000 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="font-base truncate text-sm text-text-100" dir="ltr">
+                    {g.fromDomain} → {g.toDomain}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  aria-label={`Revoke transition ${g.fromDomain} to ${g.toDomain}`}
+                  onClick={() => {
+                    void permissionManager
+                      .revokeDomainTransition(g.fromDomain, g.toDomain)
+                      .then(() => setDomainTransitions(permissionManager.listDomainTransitions()));
+                  }}
+                  className="shrink-0 rounded-md p-1.5 text-text-300 transition-colors hover:bg-bg-300 hover:text-danger-100"
+                >
+                  <CloseIcon size={14} />
+                </button>
+              </div>
+            ))}
           </div>
         )}
       </Section>

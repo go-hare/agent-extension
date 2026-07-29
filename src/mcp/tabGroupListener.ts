@@ -6,7 +6,9 @@
  *  - detaches CDP for tabs that leave the MCP / session groups
  *  - clears stale mcpTabGroupId when the yellow group is dissolved
  *
- * We implement the MCP-scoped slice (not the full orange sidepanel regrouper).
+ * Only tabs / groups we have tracked (yellow Claude (MCP) + session groups
+ * used by the bridge) get detach/hide on leave — random ungroups elsewhere
+ * must not tear down debuggers.
  */
 
 import { hideIndicator } from '@/tools/tabs';
@@ -19,6 +21,11 @@ let started = false;
 let onUpdated: Parameters<typeof chrome.tabs.onUpdated.addListener>[0] | null = null;
 let onRemoved: Parameters<typeof chrome.tabs.onRemoved.addListener>[0] | null = null;
 let onGroupRemoved: ((group: chrome.tabGroups.TabGroup) => void) | null = null;
+
+/** Tabs currently known to sit in a managed MCP / session group. */
+const mcpTabIds = new Set<number>();
+/** Group ids we manage (shared yellow + session_scope groups). */
+const managedGroupIds = new Set<number>();
 
 async function loadMcpGroupId(): Promise<number | null> {
   try {
@@ -41,11 +48,8 @@ async function clearMcpGroupIdIf(id: number): Promise<void> {
   }
 }
 
-/**
- * When a tab leaves the MCP yellow group (or any group whose title is Claude (MCP)),
- * hide indicators and detach debugger so the debug banner clears.
- */
 async function onTabLeftMcpGroup(tabId: number): Promise<void> {
+  mcpTabIds.delete(tabId);
   try {
     await hideIndicator(tabId);
   } catch {
@@ -60,42 +64,63 @@ async function onTabLeftMcpGroup(tabId: number): Promise<void> {
 
 async function isMcpManagedGroup(groupId: number): Promise<boolean> {
   if (groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) return false;
+  if (managedGroupIds.has(groupId)) return true;
   const stored = await loadMcpGroupId();
-  if (stored === groupId) return true;
+  if (stored === groupId) {
+    managedGroupIds.add(groupId);
+    return true;
+  }
   try {
     const g = await chrome.tabGroups.get(groupId);
-    return Boolean(
-      g.color === chrome.tabGroups.Color.YELLOW && g.title?.includes(MCP_GROUP_TITLE),
-    );
+    if (
+      g.color === chrome.tabGroups.Color.YELLOW &&
+      g.title?.includes(MCP_GROUP_TITLE)
+    ) {
+      managedGroupIds.add(groupId);
+      return true;
+    }
   } catch {
-    return false;
+    /* ignore */
+  }
+  return false;
+}
+
+/** Seed membership from the shared yellow MCP group in storage. */
+async function refreshMcpTabMembership(): Promise<void> {
+  const groupId = await loadMcpGroupId();
+  if (groupId == null) return;
+  managedGroupIds.add(groupId);
+  try {
+    const tabs = await chrome.tabs.query({ groupId });
+    for (const t of tabs) {
+      if (t.id != null) mcpTabIds.add(t.id);
+    }
+  } catch {
+    /* group gone */
   }
 }
 
 export function startMcpTabGroupListener(): void {
   if (started || !chrome.tabs?.onUpdated) return;
   started = true;
+  void refreshMcpTabMembership();
 
-  onUpdated = (tabId, change, tab) => {
-    // Official AE subscribe filters on groupId changes.
+  onUpdated = (tabId, change, _tab) => {
     if (!('groupId' in change)) return;
     const next = change.groupId;
     void (async () => {
       try {
-        // Left a group entirely, or moved to a non-MCP group.
-        if (next === chrome.tabGroups.TAB_GROUP_ID_NONE || next == null) {
-          // Only act if it *was* in MCP group — we don't have previous id in changeInfo,
-          // so detach/hide is best-effort for any ungroup during an MCP session.
-          await onTabLeftMcpGroup(tabId);
-          return;
+        if (next != null && next !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
+          if (await isMcpManagedGroup(next)) {
+            mcpTabIds.add(tabId);
+            return;
+          }
         }
-        if (!(await isMcpManagedGroup(next))) {
-          // Moved into some other group while MCP session may still be live.
+
+        // Left a managed group — only clean if we previously tracked this tab.
+        if (mcpTabIds.has(tabId)) {
           await onTabLeftMcpGroup(tabId);
-          return;
         }
-        // Joined / stayed in MCP group — ensure yellow title if it's the stored group.
-        void tab;
       } catch {
         /* ignore */
       }
@@ -103,13 +128,29 @@ export function startMcpTabGroupListener(): void {
   };
 
   onRemoved = (tabId) => {
-    void onTabLeftMcpGroup(tabId);
+    if (mcpTabIds.has(tabId)) {
+      void onTabLeftMcpGroup(tabId);
+    } else {
+      mcpTabIds.delete(tabId);
+    }
   };
 
-  // Chrome fires onRemoved with the TabGroup that was removed (id still valid
-  // on the object; the group is already gone from the browser).
   onGroupRemoved = (group) => {
-    void clearMcpGroupIdIf(group.id);
+    void (async () => {
+      await clearMcpGroupIdIf(group.id);
+      managedGroupIds.delete(group.id);
+      // Members of a dissolved managed group leave — clean known tabs by
+      // re-querying is unnecessary; drop all tracked tabs that no longer exist
+      // is handled by onRemoved. For dissolved group, clear any still-tracked
+      // tabs that were only in this group by best-effort: if group was managed,
+      // refresh won't re-add them.
+      if (
+        group.color === chrome.tabGroups.Color.YELLOW ||
+        managedGroupIds.size === 0
+      ) {
+        /* membership rebuild on next start / track call */
+      }
+    })();
   };
 
   chrome.tabs.onUpdated.addListener(onUpdated);
@@ -124,6 +165,8 @@ export function startMcpTabGroupListener(): void {
 export function stopMcpTabGroupListener(): void {
   if (!started) return;
   started = false;
+  mcpTabIds.clear();
+  managedGroupIds.clear();
   if (onUpdated) {
     try {
       chrome.tabs.onUpdated.removeListener(onUpdated);
@@ -152,4 +195,12 @@ export function stopMcpTabGroupListener(): void {
 
 export function isMcpTabGroupListenerStarted(): boolean {
   return started;
+}
+
+/** Mark a tab (and optional group) as MCP/session-managed for leave cleanup. */
+export function trackMcpTab(tabId: number, groupId?: number): void {
+  if (tabId >= 0) mcpTabIds.add(tabId);
+  if (groupId != null && groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
+    managedGroupIds.add(groupId);
+  }
 }

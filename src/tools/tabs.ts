@@ -249,50 +249,266 @@ export function formatTabs(ctx: TabContext): string {
 
 
 /**
+ * Messages that address a specific ref_N and must search child frames when
+ * the top frame does not own that element map entry.
+ * (a11y CS is all_frames; each frame has its own __agentElementMap.)
+ */
+const REF_SCOPED_TYPES = new Set([
+  'AGENT_RESOLVE_REF',
+  'AGENT_SCROLL_REF',
+  'AGENT_FORM_INPUT',
+  'AGENT_DELIVER_FILES',
+]);
+
+/** Namespaced child-frame refs from multi-frame read_page: `f12_ref_3`. */
+const FRAME_REF_RE = /^f(\d+)_(ref_\d+)$/i;
+
+function isRefMissingResponse(res: unknown): boolean {
+  if (!res || typeof res !== 'object') return false;
+  const o = res as { ok?: boolean; error?: string };
+  if (o.ok === true) return false;
+  const err = (o.error ?? '').toLowerCase();
+  // Only treat as "try next frame" when the ref is absent in this frame —
+  // not for form validation errors like "option not found".
+  return (
+    /was never seen|no longer exists|no element found with reference|could not resolve|unknown ref|element may have been removed|never seen on this page/i.test(
+      err,
+    )
+  );
+}
+
+/** Frame ids for multi-frame a11y / form_input (main frame first). */
+export async function listFrameIds(tabId: number): Promise<number[]> {
+  try {
+    if (chrome.webNavigation?.getAllFrames) {
+      const frames = await chrome.webNavigation.getAllFrames({ tabId });
+      if (frames?.length) {
+        return frames
+          .map((f) => f.frameId)
+          .sort((a, b) => (a === 0 ? -1 : b === 0 ? 1 : a - b));
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  return [0];
+}
+
+async function sendToFrame<T>(
+  tabId: number,
+  frameId: number,
+  message: Record<string, unknown>,
+): Promise<T | undefined> {
+  try {
+    const res = await chrome.tabs.sendMessage(tabId, message, { frameId });
+    if (res === undefined) return undefined;
+    return res as T;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Rewrite local `ref_N` tokens in a child-frame a11y tree to `f{frameId}_ref_N`
+ * so model-visible refs uniquely identify the frame for form_input / resolve.
+ */
+function namespaceRefs(pageContent: string, frameId: number): string {
+  if (frameId === 0) return pageContent;
+  return pageContent.replace(/\[ref_(\d+)\]/g, `[f${frameId}_ref_$1]`);
+}
+
+/**
+ * Aggregate all_frames a11y trees. Main frame first; each child frame is a
+ * labeled block with namespaced refs.
+ */
+async function generateTreeAllFrames(
+  tabId: number,
+  message: Record<string, unknown>,
+): Promise<{
+  pageContent: string;
+  viewport: { width: number; height: number };
+  error?: string;
+}> {
+  const frames = await listFrameIds(tabId);
+  const options = (message.options ?? {}) as Record<string, unknown>;
+  // ref_id focus stays single-frame (caller may pass fN_ref_M via resolve path).
+  const refId = typeof options.refId === 'string' ? options.refId : null;
+  if (refId) {
+    const m = FRAME_REF_RE.exec(refId);
+    if (m) {
+      const fid = Number(m[1]);
+      const local = m[2]!;
+      const res = await sendToFrame<{
+        pageContent: string;
+        viewport: { width: number; height: number };
+        error?: string;
+      }>(tabId, fid, {
+        ...message,
+        options: { ...options, refId: local },
+      });
+      if (!res) throw new Error('empty response');
+      if (res.pageContent) {
+        res.pageContent = namespaceRefs(res.pageContent, fid);
+      }
+      return res;
+    }
+  }
+
+  type FrameTree = {
+    pageContent: string;
+    viewport: { width: number; height: number };
+    error?: string;
+    isTop?: boolean;
+    url?: string;
+  };
+
+  const parts: Array<{ frameId: number; res: FrameTree }> = [];
+  for (const fid of frames) {
+    const res = await sendToFrame<FrameTree>(tabId, fid, message);
+    if (!res || res.error) continue;
+    if (!res.pageContent?.trim()) continue;
+    parts.push({ frameId: fid, res });
+  }
+
+  if (parts.length === 0) {
+    // Fall back to main-frame only so errors surface.
+    const main = await sendToFrame<FrameTree>(tabId, 0, message);
+    if (!main) throw new Error('empty response');
+    return main;
+  }
+
+  const main = parts.find((p) => p.frameId === 0) ?? parts[0]!;
+  const maxChars =
+    typeof options.maxChars === 'number' && options.maxChars > 0
+      ? options.maxChars
+      : 50_000;
+
+  const chunks: string[] = [];
+  let used = 0;
+  for (const { frameId, res } of parts) {
+    let body = res.pageContent.trim();
+    if (!body) continue;
+    if (frameId !== 0) {
+      body = namespaceRefs(body, frameId);
+      const label = res.url ? `iframe frameId=${frameId} url=${res.url}` : `iframe frameId=${frameId}`;
+      body = `[${label}]\n${body}`;
+    }
+    const next = (chunks.length ? '\n\n' : '') + body;
+    if (used + next.length > maxChars && chunks.length > 0) {
+      chunks.push(
+        `\n[output truncated — ${parts.length - chunks.length} more frame(s) omitted. Pass a larger max_chars or ref_id.]`,
+      );
+      break;
+    }
+    chunks.push(body);
+    used += next.length;
+  }
+
+  return {
+    pageContent: chunks.join('\n\n'),
+    viewport: main.res.viewport,
+  };
+}
+
+/**
+ * Resolve a model-facing ref to {frameId, localRef}.
+ * - `f12_ref_3` → frame 12, local `ref_3`
+ * - `ref_3` → walk all frames (legacy / main-frame refs)
+ */
+function parseFrameRef(refId: string | undefined): { frameId?: number; localRef: string } | null {
+  if (!refId || typeof refId !== 'string') return null;
+  const m = FRAME_REF_RE.exec(refId);
+  if (m) return { frameId: Number(m[1]), localRef: m[2]! };
+  return { localRef: refId };
+}
+
+/**
  * 给 content script 发消息，必要时先补注入。
  *
- * frameId 0 = 只发给主框架。a11y 树是 all_frames 注入的，如果不指定 frameId，
- * 每个 iframe 都会回一份，chrome.tabs.sendMessage 只取第一个回复 —— 那个
- * 很可能是某个广告 iframe 的空树。
+ * Default: frameId 0 only. a11y is all_frames — without an explicit frameId,
+ * chrome.tabs.sendMessage races every iframe and may return an empty ad frame.
+ *
+ * - AGENT_GENERATE_TREE: aggregate all frames (namespaced child refs).
+ * - Ref-scoped messages: honor `f{N}_ref_M`, else walk frames until one owns the ref.
  */
 export async function sendToPage<T>(
   tabId: number,
   message: Record<string, unknown>,
-  { retryInject = true }: { retryInject?: boolean } = {},
+  {
+    retryInject = true,
+    frameId,
+  }: { retryInject?: boolean; frameId?: number } = {},
 ): Promise<T> {
-  // Soft preflight: if the tab was open before the extension loaded, or after
-  // a soft navigation, the permanent CS may be missing — inject before first
-  // real message when ping fails (avoids one wasted round-trip only when needed).
+  const type = typeof message.type === 'string' ? message.type : '';
+  const multiFrame = frameId === undefined && REF_SCOPED_TYPES.has(type);
+  const isTree = type === 'AGENT_GENERATE_TREE';
+
+  const tryOnce = async (): Promise<T> => {
+    if (frameId != null) {
+      const res = await sendToFrame<T>(tabId, frameId, message);
+      if (res === undefined) throw new Error('empty response');
+      return res;
+    }
+
+    if (isTree) {
+      return (await generateTreeAllFrames(tabId, message)) as T;
+    }
+
+    if (!multiFrame) {
+      const res = await chrome.tabs.sendMessage(tabId, message, { frameId: 0 });
+      if (res === undefined) throw new Error('empty response');
+      return res as T;
+    }
+
+    // Ref-scoped: prefer explicit frame from namespaced ref.
+    const parsed = parseFrameRef(
+      typeof message.refId === 'string' ? message.refId : undefined,
+    );
+    if (parsed?.frameId != null) {
+      const res = await sendToFrame<T>(tabId, parsed.frameId, {
+        ...message,
+        refId: parsed.localRef,
+      });
+      if (res === undefined) throw new Error('empty response');
+      return res;
+    }
+
+    // Un-namespaced ref: walk frames until one knows the element.
+    const frames = await listFrameIds(tabId);
+    let lastMiss: T | undefined;
+    let sawAny = false;
+    for (const fid of frames) {
+      const res = await sendToFrame<T>(tabId, fid, message);
+      if (res === undefined) continue;
+      sawAny = true;
+      if (!isRefMissingResponse(res)) return res;
+      lastMiss = res;
+    }
+    if (lastMiss !== undefined) return lastMiss;
+    if (!sawAny) throw new Error('empty response');
+    throw new Error('empty response');
+  };
+
   try {
-    const res = await chrome.tabs.sendMessage(tabId, message, { frameId: 0 });
-    if (res === undefined) throw new Error('empty response');
-    return res as T;
+    return await tryOnce();
   } catch (e) {
     if (!retryInject) throw wrapPageError(e, tabId);
 
-    // 常见原因：老页面没注入 / SPA 换了 document / 页面刚导航完还没就绪 /
-    // 生产包 inject 路径写错（src/… 在 dist 不存在）
     const injected = await injectA11yScript(tabId);
     if (!injected) throw wrapPageError(e, tabId);
 
-    // executeScript resolves before the new isolated world finishes registering
-    // onMessage — brief yield matches official re-arm timing.
     await delay(50);
 
     try {
-      const res = await chrome.tabs.sendMessage(tabId, message, { frameId: 0 });
-      if (res === undefined) throw new Error('empty response after injection');
-      return res as T;
+      return await tryOnce();
     } catch (e2) {
-      // Second chance: page still loading
       try {
         const tab = await chrome.tabs.get(tabId);
         if (tab.status !== 'complete') {
           await waitForLoad(tabId, 8_000);
           await injectA11yScript(tabId);
           await delay(80);
-          const res = await chrome.tabs.sendMessage(tabId, message, { frameId: 0 });
-          if (res !== undefined) return res as T;
+          return await tryOnce();
         }
       } catch {
         /* fall through */

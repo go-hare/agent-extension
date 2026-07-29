@@ -19,6 +19,7 @@ import {
   enqueuePrompt,
   getScheduleByAlarmName,
   resyncAllAlarms,
+  setScheduleEnabled,
 } from '@/scheduling/store';
 import {
   checkNativeHostStatus,
@@ -212,10 +213,21 @@ chrome.runtime.onMessage.addListener((msg: Msg, sender, sendResponse) => {
         title: msg.title,
         message: msg.message,
       });
-      // Also play sound via offscreen when available (best-effort).
-      void chrome.runtime
-        .sendMessage({ type: 'PLAY_NOTIFICATION_SOUND', volume: 0.5 })
-        .catch(() => {});
+      // SW cannot receive its own runtime.sendMessage — play via offscreen
+      // directly (same path as PLAY_NOTIFICATION_SOUND).
+      void (async () => {
+        try {
+          await ensureOffscreenDocument();
+          const audioUrl = chrome.runtime.getURL('public/sounds/notification.mp3');
+          await chrome.runtime.sendMessage({
+            type: 'OFFSCREEN_PLAY_SOUND',
+            audioUrl,
+            volume: 0.5,
+          });
+        } catch {
+          /* best-effort */
+        }
+      })();
       sendResponse({ ok: true });
       return false;
 
@@ -395,17 +407,25 @@ chrome.alarms.onAlarm.addListener((alarm) => {
         title: s.title,
         prompt: s.prompt,
       });
-      return;
+    } else {
+      try {
+        await chrome.notifications.create({
+          type: 'basic',
+          iconUrl: chrome.runtime.getURL('public/icons/icon-128.png'),
+          title: 'Scheduled task waiting',
+          message: `"${s.title}" is ready — open Agent to run it.`,
+        });
+      } catch {
+        /* notifications may be blocked */
+      }
     }
-    try {
-      await chrome.notifications.create({
-        type: 'basic',
-        iconUrl: chrome.runtime.getURL('public/icons/icon-128.png'),
-        title: 'Scheduled task waiting',
-        message: `"${s.title}" is ready — open Agent to run it.`,
-      });
-    } catch {
-      /* notifications may be blocked */
+    // Official frequency once: fire once then disable (delay-only alarm has no period).
+    if (s.once) {
+      try {
+        await setScheduleEnabled(s.id, false);
+      } catch {
+        /* ignore */
+      }
     }
   })();
 });

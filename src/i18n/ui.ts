@@ -206,6 +206,16 @@ export type UiStrings = {
   batchStoppedOnError: string;
   /** Official TYPE permission body label: "Text to be typed:" */
   textToBeTyped: string;
+  /** Official jZ domain transition card */
+  domainTransitionPaused: (fromDomain: string, toDomain: string) => string;
+  domainTransitionContinue: string;
+  domainTransitionStop: string;
+  domainTransitionAlways: string;
+  domainTransitionAlwaysHint: string;
+  /** Options: remembered from→to pairs */
+  sectionDomainTransitions: string;
+  sectionDomainTransitionsNote: string;
+  convertToTaskFailed: string;
   /**
    * Official permission footer is one ICU string with an inline
    * `<settingsButton>…</settingsButton>`. We split it into:
@@ -306,6 +316,12 @@ export type UiStrings = {
   pairingTitle: string;
   pairingBody: string;
   pairingGotIt: string;
+  /** Official PairingPrompt (Desktop / Claude Code connect) */
+  pairingWantsToConnect: (client: string) => string;
+  pairingNameBrowser: string;
+  pairingNamePlaceholder: string;
+  pairingIgnore: string;
+  pairingConnect: string;
 
   /** Teach Claude / Record workflow */
   teachClaude: string;
@@ -491,6 +507,10 @@ const EN_EXTRA: Pack = {
   pairingBody:
     'Official pairing links Claude Desktop / Claude Code to this extension over native messaging (open MCP). Tools run in a yellow “Claude (MCP)” tab group. Side-panel chat still uses your own API key in Settings — no pairing code is required for that path.',
   pairingGotIt: 'Got it',
+  pairingNameBrowser: 'Name this browser so you can identify it later.',
+  pairingNamePlaceholder: 'e.g., “Work laptop”, “Personal Chrome”',
+  pairingIgnore: 'Ignore',
+  pairingConnect: 'Connect',
   // fallbacks if pack miss
   keyboardShortcut: 'Keyboard shortcut',
   askBeforeActingDesc: 'Claude plans its approach before taking actions.',
@@ -680,6 +700,10 @@ const ZH_CN_EXTRA: Pack = {
   pairingBody:
     '官方配对通过原生消息（open MCP）把 Claude Desktop / Claude Code 连到本扩展，工具在黄色「Claude (MCP)」标签组中执行。侧栏对话仍使用设置里的自有 API Key，无需配对码。',
   pairingGotIt: '知道了',
+  pairingNameBrowser: '为这台浏览器命名，方便之后识别。',
+  pairingNamePlaceholder: '例如：“公司电脑”、“个人 Chrome”',
+  pairingIgnore: '忽略',
+  pairingConnect: '连接',
   keyboardShortcut: '键盘快捷键',
   askBeforeActingDesc: 'Claude 会在采取行动前先规划方法。',
   actWithoutAskingDesc: 'Claude 会在不暂停征求批准的情况下工作。',
@@ -1153,6 +1177,34 @@ function build(locale: UiLocale): UiStrings {
       'sitePermissionsDisabled',
       'Site-level permissions are disabled for this site.',
     ),
+    domainTransitionPaused: (fromDomain, toDomain) =>
+      isZh
+        ? `Claude 因从 ${fromDomain} 导航到 ${toDomain} 而暂停`
+        : `Claude paused due to a navigation from ${fromDomain} to ${toDomain}`,
+    domainTransitionContinue: p('domainTransitionContinue', isZh ? '继续' : 'Continue'),
+    domainTransitionStop: p('domainTransitionStop', isZh ? '停止' : 'Stop'),
+    domainTransitionAlways: p(
+      'domainTransitionAlways',
+      isZh ? '始终继续' : 'Always continue',
+    ),
+    domainTransitionAlwaysHint: p(
+      'domainTransitionAlwaysHint',
+      isZh ? '在这些网站之间导航时' : 'When navigating between these sites',
+    ),
+    sectionDomainTransitions: p(
+      'sectionDomainTransitions',
+      isZh ? '跨站导航授权' : 'Domain transitions',
+    ),
+    sectionDomainTransitionsNote: p(
+      'sectionDomainTransitionsNote',
+      isZh
+        ? '“始终继续”记住的 from → to 站点对。可在此撤销。'
+        : 'Always-continue pairs (from → to). Revoke any you no longer want.',
+    ),
+    convertToTaskFailed: p(
+      'convertToTaskFailed',
+      isZh ? '创建任务失败，请重试。' : 'Failed to create scheduled task. Please try again.',
+    ),
     // Official eS (update_plan) — keep EN title "Claude's plan" like the official ZH pack.
     claudePlanTitle: p('claudePlanTitle', "Claude's plan"),
     planAllowSites: p(
@@ -1320,6 +1372,28 @@ function build(locale: UiLocale): UiStrings {
     pairingTitle: p('pairingTitle', EN_EXTRA.pairingTitle!),
     pairingBody: p('pairingBody', EN_EXTRA.pairingBody!),
     pairingGotIt: p('pairingGotIt', 'Got it'),
+    pairingWantsToConnect: (client: string) =>
+      p(
+        'pairingWantsToConnect',
+        isZh ? '{client} 想要连接' : '{client} wants to connect',
+      ).replace('{client}', client),
+    pairingNameBrowser: p(
+      'pairingNameBrowser',
+      isZh
+        ? '为这台浏览器命名，方便之后识别。'
+        : EN_EXTRA.pairingNameBrowser!,
+    ),
+    pairingNamePlaceholder: p(
+      'pairingNamePlaceholder',
+      isZh
+        ? '例如：“公司电脑”、“个人 Chrome”'
+        : EN_EXTRA.pairingNamePlaceholder!,
+    ),
+    pairingIgnore: p('pairingIgnore', isZh ? '忽略' : EN_EXTRA.pairingIgnore!),
+    pairingConnect: p(
+      'pairingConnect',
+      isZh ? '连接' : EN_EXTRA.pairingConnect!,
+    ),
 
     teachClaude: p('teachClaude', 'Teach Claude'),
     teachYourWorkflow: p('teachYourWorkflow', 'Teach Claude your workflow'),

@@ -42,6 +42,24 @@ type InflightMeta = {
 const inflight = new Map<string, InflightMeta>();
 
 /**
+ * If the user closes the 600×600 popup with the window chrome (X) instead of
+ * Allow/Decline, finish as denied immediately — do not wait the full 30s timeout.
+ * finishInflight also removes the window; onRemoved then no-ops (meta gone).
+ */
+let windowCloseHooked = false;
+function ensurePopupCloseHook(): void {
+  if (windowCloseHooked || !chrome.windows?.onRemoved) return;
+  windowCloseHooked = true;
+  chrome.windows.onRemoved.addListener((windowId) => {
+    for (const [id, meta] of inflight) {
+      if (meta.popupWindowId === windowId) {
+        void finishInflight(id, false);
+      }
+    }
+  });
+}
+
+/**
  * Response from official mcpPermissionOnly popup (and any legacy dual-shape).
  * Official: { type, requestId, allowed }
  */
@@ -68,13 +86,18 @@ export async function abortAllMcpPermissions(): Promise<void> {
 
 async function finishInflight(id: string, allowed: boolean): Promise<boolean> {
   const meta = inflight.get(id);
-  if (!meta) {
-    // Race: still try resolve so a late waiter unblocks.
-    await mcpPermissionManager.resolve(id, allowed, 'once');
-    return false;
-  }
+  // Already finished (Allow/Decline, timeout, abort, or onRemoved after settle).
+  // Do NOT re-resolve — a late windows.onRemoved after Allow would otherwise
+  // race resolve(false) before/over the real answer.
+  if (!meta) return false;
   clearTimeout(meta.timer);
   inflight.delete(id);
+
+  // Resolve the waiter BEFORE tearing down the popup window. chrome.windows.remove
+  // can fire onRemoved synchronously; that path must see inflight already empty
+  // and no-op (above), without flipping the decision.
+  await mcpPermissionManager.resolve(id, allowed, 'once');
+
   if (meta.storageKey) {
     try {
       await chrome.storage.local.remove(meta.storageKey);
@@ -97,8 +120,6 @@ async function finishInflight(id: string, allowed: boolean): Promise<boolean> {
       /* ignore */
     }
   }
-  // Official: grant is boolean → empty MCP PM applies ONCE only.
-  await mcpPermissionManager.resolve(id, allowed, 'once');
   return true;
 }
 
@@ -197,6 +218,13 @@ export async function promptMcpPermission(opts: {
   void opts.windowId; // official popup is independent of the host window
   const url = opts.detail.url ?? '';
   const host = hostOf(url);
+  const actionData = (opts.detail.actionData ?? null) as
+    | { fromDomain?: string; toDomain?: string }
+    | null;
+  const fromDomain =
+    typeof actionData?.fromDomain === 'string' ? actionData.fromDomain : '';
+  const toDomain =
+    typeof actionData?.toDomain === 'string' ? actionData.toDomain : host;
   // Official: crypto.randomUUID as requestId (popup/storage/response key).
   // toolUseId stays on the PermissionRequest payload for grantOnce after allow.
   const requestId =
@@ -217,10 +245,12 @@ export async function promptMcpPermission(opts: {
   };
 
   // Register waiter FIRST so a fast popup response cannot race past waitFor.
+  // DOMAIN_TRANSITION needs from/to so Stop sticks as a pair deny (not host:perm).
   const waitPromise = mcpPermissionManager.waitFor(
     requestId,
     opts.permission,
     host,
+    { fromDomain, toDomain },
   );
 
   const timer = setTimeout(() => {
@@ -240,6 +270,7 @@ export async function promptMcpPermission(opts: {
   };
   opts.signal?.addEventListener('abort', onAbort, { once: true });
 
+  ensurePopupCloseHook();
   const popupId = await openOfficialPermissionPopup(requestId, request, opts.tabId);
   const meta = inflight.get(requestId);
   if (meta) {

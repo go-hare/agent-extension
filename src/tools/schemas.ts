@@ -428,9 +428,9 @@ export const navigateSchema: AnthropicToolSchema = {
       force: {
         type: 'boolean',
         description:
-          'If the page shows a "Leave site?" / beforeunload dialog, accept it and navigate. ' +
-          'JS dialogs are auto-handled after debugger attach so CDP does not hang; set true when ' +
-          'you intentionally discard unsaved form state. Defaults to false (same auto-accept path).',
+          'If the page shows a "Leave site?" dialog because of unsaved changes, discard those changes ' +
+          'and navigate anyway. Defaults to false: navigation is blocked and the page stays put; ' +
+          'retry with force: true to discard and continue.',
       },
     },
     required: ['url'],
@@ -493,7 +493,7 @@ export const tabsContextMcpSchema: AnthropicToolSchema = {
       createIfEmpty: {
         type: 'boolean',
         description:
-          'Creates a new MCP tab group if none exists (new window + orange "Claude (MCP)" group).',
+          'Creates a new MCP tab group if none exists (new focused window + yellow "Claude (MCP)" group).',
       },
     },
     required: [],

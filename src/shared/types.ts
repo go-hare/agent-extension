@@ -19,6 +19,11 @@ export const PERMISSION = {
   UPLOAD_IMAGE: 'upload_image',
   READ_CONSOLE_MESSAGES: 'read_console_messages',
   READ_NETWORK_REQUESTS: 'read_network_requests',
+  /**
+   * Official: cross-origin navigation pause card (jZ).
+   * Scope is fromDomain → toDomain, not a single host grant.
+   */
+  DOMAIN_TRANSITION: 'domain_transition',
   PLAN_APPROVAL: 'plan_approval',
 } as const;
 
@@ -105,6 +110,8 @@ export interface TabContext {
 export interface ToolResult {
   output?: string;
   error?: string;
+  /** Machine-readable error (e.g. navigate_beforeunload_blocked). */
+  errorCode?: string;
   /** base64 图片，会被转成 Anthropic 的 image content block */
   images?: Array<{ mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string }>;
   /** 附加的 tab 上下文，让模型知道现在有哪些 tab 可用 */

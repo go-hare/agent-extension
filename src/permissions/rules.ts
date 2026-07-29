@@ -129,6 +129,7 @@ export const PERMISSION_LABEL: Record<Permission, string> = {
   [PERMISSION.UPLOAD_IMAGE]: 'Upload a file to this page',
   [PERMISSION.READ_CONSOLE_MESSAGES]: 'Read browser console output',
   [PERMISSION.READ_NETWORK_REQUESTS]: 'Inspect network requests',
+  [PERMISSION.DOMAIN_TRANSITION]: 'Cross-site navigation',
   [PERMISSION.PLAN_APPROVAL]: 'Approve the proposed plan',
 };
 
@@ -137,6 +138,7 @@ export const PERMISSION_RISK: Record<Permission, 'low' | 'medium' | 'high'> = {
   [PERMISSION.READ_PAGE_CONTENT]: 'low',
   [PERMISSION.PLAN_APPROVAL]: 'low',
   [PERMISSION.NAVIGATE]: 'low',
+  [PERMISSION.DOMAIN_TRANSITION]: 'medium',
   [PERMISSION.CLICK]: 'medium',
   [PERMISSION.TYPE]: 'medium',
   [PERMISSION.READ_CONSOLE_MESSAGES]: 'medium',

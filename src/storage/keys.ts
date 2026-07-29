@@ -13,6 +13,11 @@ export const STORAGE_KEYS = {
   SETTINGS: 'settings',
   /** Record<host, Permission[]> —— "always" 级别的持久授权 */
   GRANTED_PERMISSIONS: 'grantedPermissions',
+  /**
+   * Official domain_transition always grants:
+   * Array<{ fromDomain: string; toDomain: string }>
+   */
+  DOMAIN_TRANSITIONS: 'domainTransitions',
   /** string[] —— 用户明确拒绝过的域名 */
   DENIED_DOMAINS: 'deniedDomains',
   /** Record<conversationId, StoredConversation> */

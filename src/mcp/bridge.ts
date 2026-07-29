@@ -15,10 +15,11 @@
 import { runTool, getTool } from '@/tools/registry';
 import {
   hostOf,
+  netlocOf,
   mcpPermissionManager,
 } from '@/permissions/manager';
 import { loadSettings } from '@/storage/settings';
-import type { Permission, ToolContext, ToolResult } from '@/shared/types';
+import { PERMISSION, type Permission, type ToolContext, type ToolResult } from '@/shared/types';
 import { showIndicator, hideIndicator } from '@/tools/tabs';
 import {
   createMcpTab,
@@ -31,6 +32,7 @@ import {
 import {
   startMcpTabGroupListener,
   stopMcpTabGroupListener,
+  trackMcpTab,
 } from './tabGroupListener';
 import {
   abortAllMcpPermissions,
@@ -51,9 +53,11 @@ async function ensureMcpSessionTurn(): Promise<void> {
   mcpSessionTurnReady = true;
 }
 
-function resetMcpSessionTurn(): void {
+/** End the MCP permission turn (disconnect / mcp_disconnected). */
+export function resetMcpSessionTurn(): void {
   mcpSessionTurnReady = false;
   mcpPermissionManager.clearOnceGrants();
+  mcpPermissionManager.abortAll();
 }
 
 /**
@@ -253,10 +257,22 @@ function makeMcpContext(opts: {
     ) {
       await mcpPermissionManager.init();
       const url = detail.url ?? '';
-      const decision = mcpPermissionManager.check(url, permission, {
-        actionLabel: detail.actionLabel,
-        toolUseId: opts.toolUseId,
-      });
+      const actionData = (detail.actionData ?? null) as
+        | { fromDomain?: string; toDomain?: string }
+        | null;
+      const fromDomain =
+        typeof actionData?.fromDomain === 'string' ? actionData.fromDomain : '';
+      const toDomain =
+        typeof actionData?.toDomain === 'string' ? actionData.toDomain : hostOf(url);
+
+      // Official DOMAIN_TRANSITION: pair grants, not host:permission / netloc ONCE.
+      const decision =
+        permission === PERMISSION.DOMAIN_TRANSITION
+          ? mcpPermissionManager.checkDomainTransition(fromDomain, toDomain)
+          : mcpPermissionManager.check(url, permission, {
+              actionLabel: detail.actionLabel,
+              toolUseId: opts.toolUseId,
+            });
 
       if (decision.allowed) return decision;
       if (!decision.needsPrompt) return decision;
@@ -305,6 +321,8 @@ async function resolveTargetTab(params: {
       {
         createIfEmpty,
         displayName: params.sessionScope?.displayName,
+        sessionKey:
+          params.sessionScope?.sessionId ?? params.sessionScope?.displayName,
       },
     );
   } else {
@@ -321,10 +339,12 @@ async function resolveTargetTab(params: {
               `Call tabs_context_mcp for valid tab IDs, or use tabs_create_mcp.`,
           );
         }
+        const tabGroupId = mcpCtx?.tabGroupId ?? params.tabGroupId;
+        trackMcpTab(t.id, tabGroupId);
         return {
           tabId: t.id,
           windowId: t.windowId,
-          tabGroupId: mcpCtx?.tabGroupId ?? params.tabGroupId,
+          tabGroupId,
         };
       }
     } catch (e) {
@@ -339,6 +359,8 @@ async function resolveTargetTab(params: {
 
   if (mcpCtx && mcpCtx.tabs.length > 0) {
     const active = mcpCtx.tabs.find((t) => t.active) ?? mcpCtx.tabs[0]!;
+    trackMcpTab(active.id, mcpCtx.tabGroupId);
+    for (const t of mcpCtx.tabs) trackMcpTab(t.id, mcpCtx.tabGroupId);
     return {
       tabId: active.id,
       windowId: mcpCtx.windowId,
@@ -428,6 +450,8 @@ async function executeMcpToolInner(params: {
           {
             createIfEmpty,
             displayName: params.sessionScope.displayName,
+            sessionKey:
+              params.sessionScope.sessionId ?? params.sessionScope.displayName,
           },
         );
         if (!ctx) {
@@ -435,6 +459,7 @@ async function executeMcpToolInner(params: {
             'No tab group exists for this session. Use createIfEmpty: true to create one.',
           );
         }
+        for (const t of ctx.tabs) trackMcpTab(t.id, ctx.tabGroupId);
         const current =
           params.tabId != null && ctx.tabs.some((t) => t.id === params.tabId)
             ? params.tabId
@@ -450,6 +475,7 @@ async function executeMcpToolInner(params: {
           'No MCP tab groups found. Use createIfEmpty: true to create one.',
         );
       }
+      for (const t of ctx.tabs) trackMcpTab(t.id, ctx.tabGroupId);
       const current =
         params.tabId != null && ctx.tabs.some((t) => t.id === params.tabId)
           ? params.tabId
@@ -489,6 +515,7 @@ async function executeMcpToolInner(params: {
         sessionGid ??
         params.tabGroupId ??
         r.tabGroupId;
+      trackMcpTab(r.tabId, gid);
       return toolOkContent(
         `Created new tab. Tab ID: ${r.tabId}` +
           (gid != null ? ` (group ${gid})` : ''),
@@ -601,11 +628,22 @@ async function executeMcpToolInner(params: {
         return toolErrorContent('Permission denied by user');
       }
 
-      // Official: grantPermission({type:"netloc", netloc:host}, qI.ONCE, toolUseId, origin)
-      // ONCE is host-scoped only — no permission type on the grant.
-      const h = hostOf(pr.url);
-      if (h) {
-        mcpPermissionManager.grantOnce(toolUseId, h, pr.permission);
+      // Official: grantPermission({type:"netloc", netloc:e.host}, qI.ONCE, toolUseId, origin)
+      // ONCE is netloc-scoped (URL.host may include port) — no permission type.
+      // Domain transitions are pair-scoped (from→to), not netloc ONCE.
+      if (pr.permission === PERMISSION.DOMAIN_TRANSITION) {
+        const ad = (pr.actionData ?? null) as
+          | { fromDomain?: string; toDomain?: string }
+          | null;
+        const from = typeof ad?.fromDomain === 'string' ? ad.fromDomain : '';
+        const to =
+          typeof ad?.toDomain === 'string' ? ad.toDomain : hostOf(pr.url);
+        mcpPermissionManager.grantDomainTransition(from, to, false);
+      } else {
+        const netloc = netlocOf(pr.url) || hostOf(pr.url);
+        if (netloc) {
+          mcpPermissionManager.grantOnce(toolUseId, netloc, pr.permission);
+        }
       }
 
       // ── retry_execute (official second handleToolCall) ──

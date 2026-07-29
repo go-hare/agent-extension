@@ -43,7 +43,7 @@ import { listShortcuts, type Shortcut } from '@/shortcuts/store';
 import { UiLocaleProvider, useUi } from '@/i18n/UiLocaleContext';
 import { getUiStrings, type UiLocale } from '@/i18n/ui';
 import { loadOnboarding, patchOnboarding, type OnboardingFlags } from '@/onboarding/store';
-import { createSchedule } from '@/scheduling/store';
+import { convertAndCreateSchedule } from '@/scheduling/convertConversation';
 import type { PermissionItem } from './state/transcript';
 import {
   loadNotificationsPref,
@@ -238,30 +238,32 @@ function AppShell({
   }, [session]);
 
   /**
-   * Official FZ “Convert to task”: turn the current chat into a Scheduled entry.
-   * Full official path asks the model for XML (title/prompt/frequency/url);
-   * our MVP seeds Options → Scheduled from the last user turn so the menu
-   * works end-to-end without a separate conversion surface.
+   * Official FZ “Convert to task”: LLM extracts <scheduled_task> XML
+   * (title/prompt/frequency/url/datetime) then opens Options on the new schedule.
    */
   const onConvertToTask = useCallback(async () => {
     if (session.running) return;
-    const users = session.items.filter((i) => i.kind === 'user');
-    if (users.length === 0) return;
+    // Transcript: user turns are kind:'user'; assistant text is kind:'text'.
+    const convertible: Array<{ kind: string; text: string }> = [];
+    for (const i of session.items) {
+      if (i.kind === 'user' && i.text?.trim()) {
+        convertible.push({ kind: 'user', text: i.text });
+      } else if (i.kind === 'text' && i.text?.trim()) {
+        convertible.push({ kind: 'assistant', text: i.text });
+      }
+    }
+    if (convertible.length === 0) return;
 
-    const last = users[users.length - 1]!;
-    const raw = last.text.replace(/\s+/g, ' ').trim();
-    if (!raw) return;
-
-    const title = (raw.length > 50 ? `${raw.slice(0, 47)}…` : raw) || 'Converted task';
-    // Prefer the final user instruction; earlier turns are often setup/noise.
-    await createSchedule({
-      title,
-      prompt: raw,
-      everyMinutes: 24 * 60, // daily — closest to official recurring default
-      tabUrl: session.tab?.url,
-    });
-    // Land in Options so the user can edit cadence / pause / delete.
-    void chrome.runtime.openOptionsPage();
+    try {
+      await convertAndCreateSchedule({
+        items: convertible,
+        currentUrl: session.tab?.url,
+      });
+      void chrome.runtime.openOptionsPage();
+    } catch (e) {
+      console.warn('[convertToTask]', e);
+      throw e;
+    }
   }, [session.items, session.running, session.tab?.url]);
 
   const finishBeforeYouStart = useCallback(() => {

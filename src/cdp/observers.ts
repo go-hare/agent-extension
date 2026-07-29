@@ -341,9 +341,9 @@ export async function getResponseBody(
  * 页面的 JS 线程停住，我们发的所有 Input/Runtime 命令都会超时，
  * 而且模型在截图里看不出问题（截图也拍不到原生对话框）。
  *
- * 策略：默认自动 accept，把内容记下来告诉模型。不自动 accept 的话
- * agent 会莫名其妙地全面卡死，这个代价比"未经允许点了确定"更大 ——
- * 但真正有副作用的 confirm 应该在触发它的那次点击时就已经过权限检查了。
+ * Official navigate.force path (mI / setBeforeunloadPolicy):
+ *  - beforeunload defaults to **dismiss** (block leave) unless force=true set accept
+ *  - alert/confirm/prompt still auto-accept so CDP Input cannot hang
  */
 export interface DialogRecord {
   type: string;
@@ -351,35 +351,151 @@ export interface DialogRecord {
   defaultPrompt?: string;
   handledAs: 'accept' | 'dismiss';
   at: number;
+  url?: string;
 }
+
+export type BeforeunloadPolicy = 'accept' | 'dismiss';
+export type BeforeunloadOutcome = {
+  action: 'accepted' | 'dismissed';
+  url: string;
+  timestamp: number;
+};
 
 const dialogLog = new Map<number, DialogRecord[]>();
 /** Dispose fns so re-attach / disposeObservers do not leak Page.javascriptDialogOpening. */
 const dialogDisposers = new Map<number, () => void>();
+const beforeunloadPolicyByTab = new Map<number, BeforeunloadPolicy>();
+const beforeunloadOutcomeByTab = new Map<number, BeforeunloadOutcome>();
+const beforeunloadWaitersByTab = new Map<number, () => void>();
+
+/** Official DE.setBeforeunloadPolicy — set right before a navigation that may trip Leave site? */
+export function setBeforeunloadPolicy(tabId: number, policy: BeforeunloadPolicy): void {
+  beforeunloadPolicyByTab.set(tabId, policy);
+  beforeunloadOutcomeByTab.delete(tabId);
+  const waiter = beforeunloadWaitersByTab.get(tabId);
+  if (waiter) {
+    beforeunloadWaitersByTab.delete(tabId);
+    waiter();
+  }
+}
+
+/** Official DE.waitForBeforeunloadResolution — short window after navigate starts. */
+export function waitForBeforeunloadResolution(tabId: number, timeoutMs = 300): Promise<void> {
+  if (beforeunloadOutcomeByTab.get(tabId)?.action === 'dismissed') {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      beforeunloadWaitersByTab.delete(tabId);
+      resolve();
+    };
+    beforeunloadWaitersByTab.set(tabId, finish);
+    const timer = setTimeout(finish, timeoutMs);
+  });
+}
+
+/** Official DE.consumeBeforeunloadOutcome — read once after wait. */
+export function consumeBeforeunloadOutcome(tabId: number): BeforeunloadOutcome | undefined {
+  const o = beforeunloadOutcomeByTab.get(tabId);
+  if (o) beforeunloadOutcomeByTab.delete(tabId);
+  beforeunloadPolicyByTab.delete(tabId);
+  return o;
+}
+
+/**
+ * Official mI(tabId, force, navigateFn):
+ * set policy → run navigate → wait briefly → return accepted/blocked/none.
+ */
+export async function runWithBeforeunloadPolicy(
+  tabId: number,
+  force: boolean,
+  navigateFn: () => Promise<void>,
+): Promise<
+  | { kind: 'none' }
+  | { kind: 'accepted'; suffix: string }
+  | { kind: 'blocked'; error: string }
+> {
+  setBeforeunloadPolicy(tabId, force ? 'accept' : 'dismiss');
+  await navigateFn();
+  await waitForBeforeunloadResolution(tabId, 300);
+  const outcome = consumeBeforeunloadOutcome(tabId);
+  if (!outcome) return { kind: 'none' };
+  if (outcome.action === 'accepted') {
+    return {
+      kind: 'accepted',
+      suffix:
+        ' (discarded a "Leave site?" dialog — the page had unsaved changes that are now lost)',
+    };
+  }
+  return {
+    kind: 'blocked',
+    error:
+      `Navigation was blocked by a "Leave site?" dialog — the page at ${outcome.url || 'this URL'} ` +
+      `has unsaved changes. The page is still open and unchanged. Either address the unsaved state first, ` +
+      `or retry with force: true to discard it and navigate anyway.`,
+  };
+}
 
 export async function installDialogHandler(tabId: number): Promise<void> {
   await ensureDomain(tabId, 'Page');
   if (dialogLog.has(tabId)) return;
   dialogLog.set(tabId, []);
 
-  const off = onEvent(tabId, 'Page.javascriptDialogOpening', (raw) => {
-    const p = raw as { type: string; message: string; defaultPrompt?: string };
-    // Default accept: beforeunload must complete navigation; alert/confirm must not
-    // freeze CDP Input. navigate.force=false can still surface via drainDialogs.
-    const accept = true;
+  const offDialog = onEvent(tabId, 'Page.javascriptDialogOpening', (raw) => {
+    const p = raw as { type: string; message: string; defaultPrompt?: string; url?: string };
+    let accept = true;
+    if (p.type === 'beforeunload') {
+      // Official: policy defaults to dismiss (block) unless navigate.force set accept.
+      accept = (beforeunloadPolicyByTab.get(tabId) ?? 'dismiss') === 'accept';
+      beforeunloadPolicyByTab.delete(tabId);
+      const outcome: BeforeunloadOutcome = {
+        action: accept ? 'accepted' : 'dismissed',
+        url: p.url || '',
+        timestamp: Date.now(),
+      };
+      beforeunloadOutcomeByTab.set(tabId, outcome);
+      if (!accept) {
+        const waiter = beforeunloadWaitersByTab.get(tabId);
+        if (waiter) {
+          beforeunloadWaitersByTab.delete(tabId);
+          waiter();
+        }
+      }
+    }
+
     dialogLog.get(tabId)?.push({
       type: p.type,
       message: p.message,
       defaultPrompt: p.defaultPrompt,
       handledAs: accept ? 'accept' : 'dismiss',
       at: Date.now(),
+      url: p.url,
     });
     void send(tabId, 'Page.handleJavaScriptDialog', {
       accept,
       ...(p.type === 'prompt' ? { promptText: p.defaultPrompt ?? '' } : {}),
     }).catch(() => {});
   });
-  dialogDisposers.set(tabId, off);
+
+  // Main-frame navigation clears any pending beforeunload waiters (dialog never shown).
+  const offNav = onEvent(tabId, 'Page.frameNavigated', (raw) => {
+    const p = raw as { frame?: { parentId?: string } };
+    if (p.frame?.parentId) return;
+    const waiter = beforeunloadWaitersByTab.get(tabId);
+    if (waiter) {
+      beforeunloadWaitersByTab.delete(tabId);
+      waiter();
+    }
+  });
+
+  dialogDisposers.set(tabId, () => {
+    offDialog();
+    offNav();
+  });
 }
 
 /** 取出并清空自上次调用以来发生的对话框。 */
@@ -404,4 +520,15 @@ export function disposeObservers(tabId: number): void {
     dialogDisposers.delete(tabId);
   }
   dialogLog.delete(tabId);
+  beforeunloadPolicyByTab.delete(tabId);
+  beforeunloadOutcomeByTab.delete(tabId);
+  const waiter = beforeunloadWaitersByTab.get(tabId);
+  if (waiter) {
+    beforeunloadWaitersByTab.delete(tabId);
+    try {
+      waiter();
+    } catch {
+      /* ignore */
+    }
+  }
 }

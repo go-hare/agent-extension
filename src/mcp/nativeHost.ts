@@ -15,7 +15,12 @@
  *  - If no host is installed, do NOT spin forever (avoids console spam + SW churn)
  */
 
-import { handleNativeMessage, type NativeInbound, type NativeOutbound } from './bridge';
+import {
+  handleNativeMessage,
+  resetMcpSessionTurn,
+  type NativeInbound,
+  type NativeOutbound,
+} from './bridge';
 import { setMcpConnected } from './group';
 import {
   startMcpTabGroupListener,
@@ -116,6 +121,7 @@ export async function completePairingConfirm(
   requestId: string,
   name: string,
 ): Promise<void> {
+  if (lastPairingRequestId === requestId) lastPairingRequestId = null;
   try {
     await chrome.storage.local.set({ [BRIDGE_DISPLAY_NAME_KEY]: name });
   } catch {
@@ -137,6 +143,7 @@ export async function completePairingConfirm(
 }
 
 export function completePairingDismiss(requestId: string): void {
+  if (lastPairingRequestId === requestId) lastPairingRequestId = null;
   postOutbound({
     type: 'pairing_response',
     request_id: requestId,
@@ -337,10 +344,12 @@ export async function tryConnectNativeHost(): Promise<boolean> {
         port = null;
         connectedHostName = null;
         mcpSessionConnected = false;
+        lastPairingRequestId = null;
         stopMcpTabGroupListener();
         void setMcpConnected(false);
         // Unblock any SW permission waiters; official ends the MCP session here.
         void abortAllMcpPermissions().catch(() => {});
+        resetMcpSessionTurn();
         // Official mcp_disconnected path also detaches CDP.
         void detachAll().catch(() => {});
         if (intentionalDisconnect) {
@@ -382,8 +391,12 @@ export function disconnectNativeHost(): void {
   // only after a successful connect; reset notFound so manual reconnect retries.
   notFoundStreak = 0;
   reconnectAttempt = 0;
+  lastPairingRequestId = null;
   stopMcpTabGroupListener();
   void setMcpConnected(false);
+  // Unblock permission waiters even if onDisconnect is delayed / already ran.
+  void abortAllMcpPermissions().catch(() => {});
+  resetMcpSessionTurn();
   void detachAll().catch(() => {});
   try {
     old?.disconnect();

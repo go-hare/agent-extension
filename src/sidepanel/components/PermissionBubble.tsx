@@ -198,6 +198,72 @@ export function PermissionBubble({
     );
   }
 
+  // ── Official jZ domain-transition card ──────────────────────────────
+  const isDomainTransition = request.permission === PERMISSION.DOMAIN_TRANSITION;
+  if (isDomainTransition) {
+    const data = (request.actionData ?? null) as
+      | { fromDomain?: string; toDomain?: string }
+      | null;
+    const fromDomain =
+      (typeof data?.fromDomain === 'string' && data.fromDomain) || request.host || '?';
+    const toDomain =
+      (typeof data?.toDomain === 'string' && data.toDomain) ||
+      (() => {
+        try {
+          return request.url ? new URL(request.url).hostname : '?';
+        } catch {
+          return '?';
+        }
+      })();
+
+    return (
+      <div className="bg-bg-000 rounded-[14px]">
+        <div className="flex items-center gap-2 py-[10px] px-4">
+          <ShieldIcon size={20} className="text-text-100" />
+          <h3 className="font-base text-text-100">{t.newPermissionsRequired}</h3>
+        </div>
+        <div className="border-t border-border-300 mb-4" />
+        <div className="space-y-4 px-4">
+          <div>
+            <p className="font-base-bold text-text-100">
+              {t.domainTransitionPaused(fromDomain, toDomain)}
+            </p>
+          </div>
+        </div>
+        <div className="px-3 py-[10px] space-y-[5px] mt-[10px] mb-0.5">
+          <ScopeButton
+            isActive={active === 'once'}
+            onClick={() => commit(true, 'once', 'once')}
+          >
+            <span>{t.domainTransitionContinue}</span>
+            <ReturnKeyIcon className="text-text-500" />
+          </ScopeButton>
+          <ScopeButton isActive={active === 'deny'} onClick={() => commit(false, 'once', 'deny')}>
+            <span>{t.domainTransitionStop}</span>
+            <EscKeyIcon className="text-text-500" />
+          </ScopeButton>
+          <div className="border-t-[0.5px] border-border-300 my-3 -mx-3" />
+          {canAlways ? (
+            <ScopeButton
+              isActive={active === 'always'}
+              height="55px"
+              onClick={() => commit(true, 'always', 'always')}
+            >
+              <div className="flex flex-col items-start">
+                <span>{t.domainTransitionAlways}</span>
+                <span className="font-small text-text-500">{t.domainTransitionAlwaysHint}</span>
+              </div>
+              <span className="flex items-center gap-0.5">
+                <MetaOrCtrlHint className="text-text-500" />
+                <ReturnKeyIcon className="text-text-500" />
+              </span>
+            </ScopeButton>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
   // ── Official eS plan card (NOT CZ) ──────────────────────────────────
   if (isPlan && plan) {
     const domains = plan.domains;
@@ -776,6 +842,8 @@ function verbFor(permission: string, t: ReturnType<typeof useUi>): string {
       return t.verbNetwork;
     case PERMISSION.PLAN_APPROVAL:
       return t.verbPlan;
+    case PERMISSION.DOMAIN_TRANSITION:
+      return t.verbNavigate;
     default:
       return t.verbAct;
   }

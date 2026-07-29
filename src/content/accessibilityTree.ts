@@ -48,12 +48,21 @@ interface TreeOptions {
   maxDepth: number;
   maxChars: number;
   refId: string | null;
+  /**
+   * Prefix for ref ids when aggregating multiple frames (e.g. `f12_`).
+   * Main frame uses empty string so refs stay `ref_N`.
+   */
+  refPrefix: string;
 }
 
 interface TreeResult {
   pageContent: string;
   viewport: { width: number; height: number };
   error?: string;
+  /** Which frame produced this tree (0 = top). Used by host aggregation. */
+  frameId?: number;
+  isTop?: boolean;
+  url?: string;
 }
 
 /** 单次遍历的节点上限。超过说明页面异常巨大，继续遍历只会拖死页面。 */
@@ -358,7 +367,12 @@ function ensureMaps(): void {
  * 复用很重要：模型读了一次页面拿到 ref_5，滚动后再读一次，
  * 同一个按钮应该还是 ref_5。否则模型会以为页面变了。
  */
-function refFor(el: Element): string {
+/**
+ * Allocate / reuse a local ref id in this frame's map.
+ * Host may display child-frame refs as `f{frameId}_ref_N`; the map key stays
+ * the local `ref_N` (or prefixed form if opts.refPrefix was set at create time).
+ */
+function refFor(el: Element, prefix = ''): string {
   ensureMaps();
   const map = window.__agentElementMap!;
   const reverse = window.__agentElementReverseMap!;
@@ -370,7 +384,7 @@ function refFor(el: Element): string {
   }
 
   window.__agentRefCounter = (window.__agentRefCounter ?? 0) + 1;
-  const ref = `ref_${window.__agentRefCounter}`;
+  const ref = `${prefix}ref_${window.__agentRefCounter}`;
   map[ref] = new WeakRef(el);
   reverse.set(el, ref);
   return ref;
@@ -386,9 +400,11 @@ function generateTree(raw: Partial<TreeOptions> = {}): TreeResult {
     maxDepth: raw.maxDepth ?? 15,
     maxChars: raw.maxChars ?? 50_000,
     refId: raw.refId ?? null,
+    refPrefix: raw.refPrefix ?? '',
   };
 
   const viewport = { width: window.innerWidth, height: window.innerHeight };
+  const isTop = window === window.top;
 
   try {
     ensureMaps();
@@ -406,7 +422,7 @@ function generateTree(raw: Partial<TreeOptions> = {}): TreeResult {
       if (included) {
         const role = roleOf(el);
         const name = accessibleName(el);
-        const ref = refFor(el);
+        const ref = refFor(el, opts.refPrefix);
         count++;
 
         let line = `${' '.repeat(depth)}${role}`;
@@ -507,11 +523,18 @@ function generateTree(raw: Partial<TreeOptions> = {}): TreeResult {
         '.]';
     }
 
-    return { pageContent: content, viewport };
+    return {
+      pageContent: content,
+      viewport,
+      isTop,
+      url: location.href,
+    };
   } catch (e) {
     return {
       pageContent: '',
       viewport,
+      isTop,
+      url: location.href,
       error: `Error generating accessibility tree: ${e instanceof Error ? e.message : 'Unknown error'}`,
     };
   }

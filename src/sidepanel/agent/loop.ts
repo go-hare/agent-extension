@@ -257,9 +257,21 @@ function makeToolContext(
       detail,
     ): Promise<PermissionDecision> {
       const url = detail.url ?? '';
-      const decision = permissionManager.check(url, permission, {
-        actionLabel: detail.actionLabel,
-      });
+      const actionData = (detail.actionData ?? null) as
+        | { fromDomain?: string; toDomain?: string }
+        | null;
+      const fromDomain =
+        typeof actionData?.fromDomain === 'string' ? actionData.fromDomain : '';
+      const toDomain =
+        typeof actionData?.toDomain === 'string' ? actionData.toDomain : hostOf(url);
+
+      // Official DOMAIN_TRANSITION: check pair grants, not host:permission grants.
+      const decision =
+        permission === PERMISSION.DOMAIN_TRANSITION
+          ? permissionManager.checkDomainTransition(fromDomain, toDomain)
+          : permissionManager.check(url, permission, {
+              actionLabel: detail.actionLabel,
+            });
 
       if (decision.allowed) return decision;
       if (!decision.needsPrompt) return decision; // 明确拒绝，不问
@@ -276,7 +288,7 @@ function makeToolContext(
         };
       }
 
-      const host = hostOf(url);
+      const host = toDomain || hostOf(url);
 
       emit({
         type: 'permission_request',
@@ -293,7 +305,10 @@ function makeToolContext(
         },
       });
 
-      const answer = await permissionManager.waitFor(toolUseId, permission, host);
+      const answer = await permissionManager.waitFor(toolUseId, permission, host, {
+        fromDomain,
+        toDomain,
+      });
       emit({ type: 'permission_resolved', toolUseId, granted: answer.granted });
 
       if (!answer.granted) {
@@ -325,11 +340,15 @@ function makeToolContext(
 /** ToolResult → Anthropic tool_result content block。 */
 function toContentBlock(toolUseId: string, result: ToolResult): ContentBlockParam {
   if (result.error) {
+    const text =
+      result.errorCode && !result.error.includes(result.errorCode)
+        ? `${result.error} [${result.errorCode}]`
+        : result.error;
     return {
       type: 'tool_result',
       tool_use_id: toolUseId,
       is_error: true,
-      content: [{ type: 'text', text: result.error }],
+      content: [{ type: 'text', text }],
     };
   }
 

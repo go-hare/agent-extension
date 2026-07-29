@@ -211,9 +211,37 @@ export async function getOrCreateMcpTabContext(opts?: {
   return null;
 }
 
+/** Stable color index for a session (official colorIndex; hash when Desktop omits it). */
+export function sessionColorIndex(seed?: string): number {
+  if (!seed) return 0;
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) {
+    h = (Math.imul(31, h) + seed.charCodeAt(i)) >>> 0;
+  }
+  return h;
+}
+
+const SESSION_COLORS: chrome.tabGroups.Color[] = [
+  chrome.tabGroups.Color.BLUE,
+  chrome.tabGroups.Color.CYAN,
+  chrome.tabGroups.Color.GREEN,
+  chrome.tabGroups.Color.ORANGE,
+  chrome.tabGroups.Color.RED,
+  chrome.tabGroups.Color.PINK,
+  chrome.tabGroups.Color.PURPLE,
+  chrome.tabGroups.Color.GREY,
+];
+
 /**
  * Session-scoped MCP groups (official getOrCreateSessionTabContext).
  * Used when Desktop/Claude Code sends session_scope with a per-conversation group.
+ *
+ * Window selection (official + multi-session tighten):
+ *  1. Existing group with tabs → reuse that group/window
+ *  2. Existing group empty but still valid → create seed tab in **that group's window**
+ *     (avoid jumping to lastFocused personal window mid-session)
+ *  3. Else official path: getLastFocused(normal) → create tab + group there
+ *  4. No normal window → create unfocused window + group (official fallback)
  */
 export async function getOrCreateSessionTabContext(
   tabGroupId: number | undefined,
@@ -221,24 +249,19 @@ export async function getOrCreateSessionTabContext(
     createIfEmpty?: boolean;
     displayName?: string;
     colorIndex?: number;
+    /** Used to stabilize color when colorIndex omitted (sessionId / displayName). */
+    sessionKey?: string;
   },
 ): Promise<McpTabContext | null> {
   if (!chrome.tabGroups) return null;
 
-  const SESSION_COLORS: chrome.tabGroups.Color[] = [
-    chrome.tabGroups.Color.BLUE,
-    chrome.tabGroups.Color.CYAN,
-    chrome.tabGroups.Color.GREEN,
-    chrome.tabGroups.Color.ORANGE,
-    chrome.tabGroups.Color.RED,
-    chrome.tabGroups.Color.PINK,
-    chrome.tabGroups.Color.PURPLE,
-    chrome.tabGroups.Color.GREY,
-  ];
+  /** Prefer this window when re-seeding an empty-but-valid group. */
+  let stickyWindowId: number | undefined;
 
   if (tabGroupId != null) {
     try {
-      await chrome.tabGroups.get(tabGroupId);
+      const g = await chrome.tabGroups.get(tabGroupId);
+      stickyWindowId = g.windowId;
       if (opts.displayName) {
         try {
           await chrome.tabGroups.update(tabGroupId, { title: opts.displayName });
@@ -257,25 +280,39 @@ export async function getOrCreateSessionTabContext(
           currentTabId: tabs.find((t) => t.active)?.id ?? tabs[0]!.id,
         };
       }
+      // Group still exists but has no tabs — fall through createIfEmpty into stickyWindowId.
     } catch {
+      stickyWindowId = undefined;
       /* create below if allowed */
     }
   }
 
   if (!opts.createIfEmpty) return null;
 
-  let windowId: number | undefined;
-  try {
-    const last = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
-    if (last?.id != null) windowId = last.id;
-  } catch {
-    /* create window */
-  }
-
   const color =
-    SESSION_COLORS[(opts.colorIndex ?? 0) % SESSION_COLORS.length] ??
-    chrome.tabGroups.Color.BLUE;
+    SESSION_COLORS[
+      (opts.colorIndex ?? sessionColorIndex(opts.sessionKey ?? opts.displayName)) %
+        SESSION_COLORS.length
+    ] ?? chrome.tabGroups.Color.BLUE;
   const title = opts.displayName ?? 'Claude';
+
+  // Official: last focused normal window; we prefer sticky session window first.
+  let windowId: number | undefined = stickyWindowId;
+  if (windowId != null) {
+    try {
+      await chrome.windows.get(windowId);
+    } catch {
+      windowId = undefined;
+    }
+  }
+  if (windowId == null) {
+    try {
+      const last = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
+      if (last?.id != null) windowId = last.id;
+    } catch {
+      /* create window */
+    }
+  }
 
   if (windowId == null) {
     const win = await chrome.windows.create({
@@ -287,10 +324,24 @@ export async function getOrCreateSessionTabContext(
       throw new Error('Failed to create fallback window for session group');
     }
     const seedId = win.tabs[0].id;
-    const gid = await chrome.tabs.group({
-      tabIds: [seedId],
-      createProperties: { windowId: win.id },
-    });
+    // Prefer reusing the empty group id when Chrome still has it.
+    let gid: number;
+    if (tabGroupId != null && stickyWindowId === win.id) {
+      try {
+        await chrome.tabs.group({ tabIds: [seedId], groupId: tabGroupId });
+        gid = tabGroupId;
+      } catch {
+        gid = await chrome.tabs.group({
+          tabIds: [seedId],
+          createProperties: { windowId: win.id },
+        });
+      }
+    } else {
+      gid = await chrome.tabs.group({
+        tabIds: [seedId],
+        createProperties: { windowId: win.id },
+      });
+    }
     await chrome.tabGroups.update(gid, { title, color, collapsed: false });
     return {
       tabGroupId: gid,
@@ -306,6 +357,54 @@ export async function getOrCreateSessionTabContext(
         },
       ],
     };
+  }
+
+  // If the empty group still exists in this window, add a seed tab into it
+  // instead of minting a second group for the same session id.
+  if (tabGroupId != null) {
+    try {
+      await chrome.tabGroups.get(tabGroupId);
+      const tab = await chrome.tabs.create({
+        windowId,
+        url: 'chrome://newtab/',
+        active: false,
+      });
+      if (tab.id == null) throw new Error('Failed to create tab for session group');
+      try {
+        await chrome.tabs.group({ tabIds: [tab.id], groupId: tabGroupId });
+      } catch {
+        try {
+          await chrome.tabs.remove(tab.id);
+        } catch {
+          /* ignore */
+        }
+        // Fall through to create a fresh group below.
+        throw new Error('reseed-failed');
+      }
+      if (opts.displayName) {
+        try {
+          await chrome.tabGroups.update(tabGroupId, { title: opts.displayName, color });
+        } catch {
+          /* ignore */
+        }
+      }
+      return {
+        tabGroupId,
+        windowId,
+        created: true,
+        currentTabId: tab.id,
+        tabs: [
+          {
+            id: tab.id,
+            title: tab.title || 'New Tab',
+            url: tab.url ?? tab.pendingUrl ?? 'chrome://newtab/',
+            active: Boolean(tab.active),
+          },
+        ],
+      };
+    } catch {
+      /* create new group */
+    }
   }
 
   const tab = await chrome.tabs.create({
@@ -379,8 +478,18 @@ export async function createMcpTab(tabGroupId?: number): Promise<{
   if (tab.id == null) throw new Error('Failed to create tab - no tab ID returned');
   try {
     await chrome.tabs.group({ tabIds: [tab.id], groupId: gid });
-  } catch {
-    /* group may have been dissolved mid-flight */
+  } catch (e) {
+    // Do not leave an ungrouped personal tab as "MCP" — close and surface.
+    try {
+      await chrome.tabs.remove(tab.id);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(
+      e instanceof Error
+        ? `Failed to add tab to MCP group: ${e.message}`
+        : 'Failed to add tab to MCP group (group may have been closed). Call tabs_context_mcp with createIfEmpty: true first.',
+    );
   }
   // Shared MCP group: persist id; session groups are caller-owned.
   if (tabGroupId == null) await saveMcpGroupId(gid);

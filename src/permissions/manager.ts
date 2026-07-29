@@ -34,6 +34,12 @@ import {
 /** host → 已永久授权的权限集合 */
 type GrantMap = Record<string, Permission[]>;
 
+/** Official domain_transition always grant: fromDomain → toDomain */
+export type DomainTransitionGrant = {
+  fromDomain: string;
+  toDomain: string;
+};
+
 export interface CheckOptions {
   /** 动作文案，用来判断是不是不可逆操作 */
   actionLabel?: string;
@@ -46,6 +52,10 @@ export interface CheckOptions {
    * Official ONCE grant key (tool_use id). MCP empty PM matches grants by this id.
    */
   toolUseId?: string;
+  /** Official domain_transition: source host (current page). */
+  fromDomain?: string;
+  /** Official domain_transition: destination host. */
+  toDomain?: string;
 }
 
 export type PermissionManagerOptions = {
@@ -69,11 +79,24 @@ function hostMatches(host: string, domain: string): boolean {
   return h === d || h.endsWith(`.${d}`);
 }
 
-/** 从 URL 取 host。取不到（about:blank 之类）返回空串。 */
+/** 从 URL 取 hostname（不含端口）。域名黑白名单匹配用。 */
 export function hostOf(url: string | undefined): string {
   if (!url) return '';
   try {
     return new URL(url).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Official MCP netloc for ONCE grants: `new URL(url).host` (hostname + port).
+ * Must match grantPermission({type:"netloc", netloc:e.host}, ONCE, …).
+ */
+export function netlocOf(url: string | undefined): string {
+  if (!url) return '';
+  try {
+    return new URL(url).host.toLowerCase();
   } catch {
     return '';
   }
@@ -133,6 +156,21 @@ export class PermissionManager {
   private allowedDomains: string[] = [];
 
   /**
+   * Official domain_transition always grants (persisted).
+   * Key form: `${fromDomain}→${toDomain}` lowercased hosts.
+   */
+  private domainTransitions = new Set<string>();
+
+  /**
+   * Turn-scoped domain_transition allows (Continue once).
+   * Same key form as domainTransitions.
+   */
+  private turnDomainTransitions = new Set<string>();
+
+  /** Turn-scoped domain_transition denies (Stop) — do not re-prompt same pair. */
+  private turnDomainTransitionDenials = new Set<string>();
+
+  /**
    * Official `follow_a_plan` gate (HG / C.current):
    * until the user approves an update_plan this turn, acting tools are blocked.
    */
@@ -141,7 +179,13 @@ export class PermissionManager {
   /** 待用户回答的请求：toolUseId → resolve */
   private pending = new Map<
     string,
-    { resolve: (r: { granted: boolean; scope: PermissionScope }) => void; permission: Permission; host: string }
+    {
+      resolve: (r: { granted: boolean; scope: PermissionScope }) => void;
+      permission: Permission;
+      host: string;
+      fromDomain?: string;
+      toDomain?: string;
+    }
   >();
 
   constructor(opts: PermissionManagerOptions = {}) {
@@ -156,11 +200,16 @@ export class PermissionManager {
       // Official empty PM: do not load chat always / turn grants.
       this.granted = {};
       this.turnGrants.clear();
+      this.domainTransitions.clear();
       return;
     }
     this.granted = await get<GrantMap>(STORAGE_KEYS.GRANTED_PERMISSIONS, {});
     const turn = await get<string[]>(SESSION_KEYS.TURN_APPROVED, [], 'session');
     this.turnGrants = new Set(turn);
+    const transitions = await get<DomainTransitionGrant[]>(STORAGE_KEYS.DOMAIN_TRANSITIONS, []);
+    this.domainTransitions = new Set(
+      transitions.map((t) => domainTransitionKey(t.fromDomain, t.toDomain)).filter(Boolean),
+    );
   }
 
   /** 新一轮对话开始。turn 级授权和拒绝都清空。 */
@@ -168,6 +217,8 @@ export class PermissionManager {
     this.turnId = turnId;
     this.turnGrants.clear();
     this.turnDenials.clear();
+    this.turnDomainTransitions.clear();
+    this.turnDomainTransitionDenials.clear();
     this.planApprovedThisTurn = false;
     this.onceByToolUseId.clear();
     if (!this.isolated) {
@@ -179,14 +230,86 @@ export class PermissionManager {
     this.allowedDomains = s.allowedDomains ?? [];
   }
 
+  /** Official checkDomainTransition(from, to) — same-origin free; else prompt jZ card. */
+  checkDomainTransition(fromDomain: string, toDomain: string): PermissionDecision {
+    const from = normalizeDomainToken(fromDomain);
+    const to = normalizeDomainToken(toDomain);
+    if (!from || !to || from === to) {
+      return { allowed: true, needsPrompt: false };
+    }
+    // Denied destination blocks without prompt.
+    if (this.deniedDomains.some((d) => hostMatches(to, d))) {
+      return {
+        allowed: false,
+        needsPrompt: false,
+        reason: `${to} is on the deny list.`,
+      };
+    }
+    if (this.allowedDomains.length > 0 && !this.allowedDomains.some((d) => hostMatches(to, d))) {
+      return {
+        allowed: false,
+        needsPrompt: false,
+        reason: `${to} is not on the allow list.`,
+      };
+    }
+    const key = domainTransitionKey(from, to);
+    if (this.turnDomainTransitionDenials.has(key)) {
+      return {
+        allowed: false,
+        needsPrompt: false,
+        reason: `The user declined navigation from ${from} to ${to}. Do not retry this transition.`,
+      };
+    }
+    if (this.domainTransitions.has(key) || this.turnDomainTransitions.has(key)) {
+      return { allowed: true, needsPrompt: false };
+    }
+    return {
+      allowed: false,
+      needsPrompt: true,
+      reason: `Navigation from ${from} to ${to} needs confirmation.`,
+    };
+  }
+
+  grantDomainTransition(fromDomain: string, toDomain: string, permanent: boolean): void {
+    const key = domainTransitionKey(fromDomain, toDomain);
+    if (!key) return;
+    if (permanent && !this.isolated) {
+      this.domainTransitions.add(key);
+      void this.persistDomainTransitions();
+    } else {
+      this.turnDomainTransitions.add(key);
+    }
+  }
+
+  async revokeDomainTransition(fromDomain: string, toDomain: string): Promise<void> {
+    const key = domainTransitionKey(fromDomain, toDomain);
+    this.domainTransitions.delete(key);
+    this.turnDomainTransitions.delete(key);
+    await this.persistDomainTransitions();
+  }
+
+  listDomainTransitions(): DomainTransitionGrant[] {
+    return [...this.domainTransitions].map((k) => {
+      const [fromDomain = '', toDomain = ''] = k.split('\u2192');
+      return { fromDomain, toDomain };
+    });
+  }
+
+  private async persistDomainTransitions(): Promise<void> {
+    await set(
+      STORAGE_KEYS.DOMAIN_TRANSITIONS,
+      this.listDomainTransitions(),
+    );
+  }
+
   /**
    * Official grantPermission({type:"netloc", netloc}, ONCE, toolUseId, origin).
-   * Scope is **host-only** (no permission type). findApplicablePermission
-   * matches toolUseId + netloc and consumes the ONCE grant on first hit.
+   * Scope is **netloc-only** (URL.host, may include port — no permission type).
+   * findApplicablePermission matches toolUseId + netloc and consumes on first hit.
    */
-  grantOnce(toolUseId: string, host: string, _permission?: Permission): void {
-    if (!toolUseId || !host) return;
-    const h = host.toLowerCase();
+  grantOnce(toolUseId: string, netloc: string, _permission?: Permission): void {
+    if (!toolUseId || !netloc) return;
+    const h = netloc.toLowerCase();
     const setFor = this.onceByToolUseId.get(toolUseId) ?? new Set<string>();
     setFor.add(h);
     this.onceByToolUseId.set(toolUseId, setFor);
@@ -245,6 +368,8 @@ export class PermissionManager {
    */
   check(url: string, permission: Permission, opts: CheckOptions = {}): PermissionDecision {
     const host = hostOf(url);
+    // Official ONCE netloc is URL.host (may include port); domain lists use hostname.
+    const netloc = netlocOf(url) || host;
 
     /*
      * update_plan / PLAN_APPROVAL is not a page action — official eS has no page URL.
@@ -271,7 +396,7 @@ export class PermissionManager {
       };
     }
 
-    if (!host) {
+    if (!host && !netloc) {
       return {
         allowed: false,
         needsPrompt: false,
@@ -280,7 +405,7 @@ export class PermissionManager {
     }
 
     // 黑名单优先于一切，包括已有的永久授权。
-    if (this.deniedDomains.some((d) => hostMatches(host, d))) {
+    if (host && this.deniedDomains.some((d) => hostMatches(host, d))) {
       return {
         allowed: false,
         needsPrompt: false,
@@ -289,7 +414,11 @@ export class PermissionManager {
     }
 
     // 白名单模式：设了 allowedDomains 就只在里面工作。
-    if (this.allowedDomains.length > 0 && !this.allowedDomains.some((d) => hostMatches(host, d))) {
+    if (
+      host &&
+      this.allowedDomains.length > 0 &&
+      !this.allowedDomains.some((d) => hostMatches(host, d))
+    ) {
       return {
         allowed: false,
         needsPrompt: false,
@@ -299,13 +428,15 @@ export class PermissionManager {
       };
     }
 
-    const key = `${host}:${permission}`;
+    const key = `${host || netloc}:${permission}`;
 
-    // Official MCP ONCE: toolUseId + netloc match, then consume (revoke).
-    if (opts.toolUseId && host) {
+    // Official MCP ONCE: toolUseId + netloc (URL.host) match, then consume.
+    // Also accept legacy hostname-only grants written before this parity fix.
+    if (opts.toolUseId && netloc) {
       const once = this.onceByToolUseId.get(opts.toolUseId);
-      if (once?.has(host)) {
-        once.delete(host);
+      if (once?.has(netloc) || (host && once?.has(host))) {
+        once.delete(netloc);
+        if (host) once.delete(host);
         if (once.size === 0) this.onceByToolUseId.delete(opts.toolUseId);
         return { allowed: true, needsPrompt: false };
       }
@@ -398,9 +529,16 @@ export class PermissionManager {
     toolUseId: string,
     permission: Permission,
     host: string,
+    extra: { fromDomain?: string; toDomain?: string } = {},
   ): Promise<{ granted: boolean; scope: PermissionScope }> {
     return new Promise((resolve) => {
-      this.pending.set(toolUseId, { resolve, permission, host });
+      this.pending.set(toolUseId, {
+        resolve,
+        permission,
+        host,
+        fromDomain: extra.fromDomain,
+        toDomain: extra.toDomain,
+      });
     });
   }
 
@@ -417,6 +555,15 @@ export class PermissionManager {
     const key = `${entry.host}:${entry.permission}`;
 
     if (granted) {
+      // Official jZ: Continue → once (turn), Always continue → permanent pair.
+      if (entry.permission === PERMISSION.DOMAIN_TRANSITION) {
+        const from = entry.fromDomain ?? '';
+        const to = entry.toDomain ?? entry.host;
+        // Chat: permanent always lands on disk; MCP isolated: turn-only (popup is once).
+        this.grantDomainTransition(from, to, scope === 'always' && !this.isolated);
+        entry.resolve({ granted, scope });
+        return;
+      }
       // Official empty MCP PM: only ONCE via grantOnce(toolUseId) on retry —
       // never sticky turn/always from the popup boolean response.
       if (!this.isolated) {
@@ -440,6 +587,11 @@ export class PermissionManager {
           }
         }
       }
+    } else if (entry.permission === PERMISSION.DOMAIN_TRANSITION) {
+      const from = entry.fromDomain ?? '';
+      const to = entry.toDomain ?? entry.host;
+      const dk = domainTransitionKey(from, to);
+      if (dk) this.turnDomainTransitionDenials.add(dk);
     } else if (entry.permission !== PERMISSION.PLAN_APPROVAL) {
       // Chat: sticky deny for the turn. Official MCP ONCE deny does not sticky
       // (denyPermission returns early for ONCE) — next tool_request may re-prompt.
@@ -459,8 +611,14 @@ export class PermissionManager {
   /** turn 被用户中断时，把所有挂起的请求当作拒绝解开，避免 Promise 永久悬挂。 */
   abortAll(): void {
     for (const [id, entry] of this.pending) {
-      // Chat sticky-denies; official MCP ONCE deny does not.
-      if (!this.isolated) {
+      if (entry.permission === PERMISSION.DOMAIN_TRANSITION) {
+        // Pair deny so the same from→to is not re-prompted after abort/stop.
+        const from = entry.fromDomain ?? '';
+        const to = entry.toDomain ?? entry.host;
+        const dk = domainTransitionKey(from, to);
+        if (dk) this.turnDomainTransitionDenials.add(dk);
+      } else if (!this.isolated) {
+        // Chat sticky-denies; official MCP ONCE deny does not.
         this.turnDenials.add(`${entry.host}:${entry.permission}`);
       }
       entry.resolve({ granted: false, scope: 'once' });
@@ -481,7 +639,11 @@ export class PermissionManager {
   async revokeAll(): Promise<void> {
     this.granted = {};
     this.turnGrants.clear();
+    this.domainTransitions.clear();
+    this.turnDomainTransitions.clear();
+    this.turnDomainTransitionDenials.clear();
     await set(STORAGE_KEYS.GRANTED_PERMISSIONS, {});
+    await set(STORAGE_KEYS.DOMAIN_TRANSITIONS, []);
     await set(SESSION_KEYS.TURN_APPROVED, [], 'session');
   }
 
@@ -489,6 +651,28 @@ export class PermissionManager {
   listGrants(): Array<{ host: string; permissions: Permission[] }> {
     return Object.entries(this.granted).map(([host, permissions]) => ({ host, permissions }));
   }
+}
+
+/** Official domain pair key (arrow U+2192). */
+export function domainTransitionKey(fromDomain: string, toDomain: string): string {
+  const from = normalizeDomainToken(fromDomain);
+  const to = normalizeDomainToken(toDomain);
+  if (!from || !to) return '';
+  return `${from}\u2192${to}`;
+}
+
+function normalizeDomainToken(raw: string | undefined): string {
+  if (!raw) return '';
+  let s = raw.trim().toLowerCase();
+  // Official strips a trailing dot before port: example.com. → example.com
+  s = s.replace(/\.(?=(:\d+)?$)/, '');
+  try {
+    if (s.includes('://')) return new URL(s).hostname.toLowerCase();
+  } catch {
+    /* fall through */
+  }
+  // host:port → host for domain lists
+  return s.replace(/:\d+$/, '');
 }
 
 /** 单例。侧栏和 SW 各有一份（不同 JS 上下文），靠 storage 保持一致。 */
@@ -504,5 +688,7 @@ export const mcpPermissionManager = new PermissionManager({ isolated: true });
 export function availableScopes(permission: Permission): PermissionScope[] {
   if (NO_PERSISTENT_GRANT.has(permission)) return ['once', 'turn'];
   if (permission === PERMISSION.PLAN_APPROVAL) return ['once'];
+  // Official jZ: Continue (once) + Always continue (always) — no turn row.
+  if (permission === PERMISSION.DOMAIN_TRANSITION) return ['once', 'always'];
   return ['once', 'turn', 'always'];
 }

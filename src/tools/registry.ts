@@ -17,7 +17,7 @@ import type {
 } from '@/shared/types';
 import { PERMISSION } from '@/shared/types';
 import { ACTION_PERMISSION, NO_PERMISSION_ACTIONS } from '@/permissions/rules';
-import { permissionManager } from '@/permissions/manager';
+import { hostOf, permissionManager } from '@/permissions/manager';
 import { peekSettings } from '@/storage/settings';
 import * as cdp from '@/cdp/session';
 import * as input from '@/cdp/input';
@@ -92,6 +92,12 @@ export interface Tool {
   run: (args: never, ctx: ToolContext) => Promise<ToolResult>;
   /** 需要设置开关才可用（javascript_tool） */
   gated?: (s: ReturnType<typeof peekSettings>) => boolean;
+  /**
+   * Official: Desktop / Claude Code native allowlist only — never advertised
+   * to the sidepanel chat model (official sidepanel has zero tabs_*_mcp tools).
+   * Still callable via getTool / MCP bridge.
+   */
+  mcpOnly?: boolean;
 }
 
 /** 把 zod schema 包成统一的 parse。 */
@@ -114,11 +120,16 @@ async function guard(
   tabId: number,
   permission: Permission,
   actionLabel: string,
-  extra: { screenshot?: string; actionData?: unknown } = {},
+  extra: {
+    screenshot?: string;
+    actionData?: unknown;
+    /** Override URL used for permission host / display (e.g. navigate target). */
+    urlOverride?: string;
+  } = {},
 ): Promise<ToolResult | null> {
   let url: string;
   try {
-    url = await getTabUrl(tabId);
+    url = extra.urlOverride ?? (await getTabUrl(tabId));
   } catch (e) {
     return { error: msg(e) };
   }
@@ -126,19 +137,19 @@ async function guard(
   const decision = await ctx.requestPermission(permission, {
     actionLabel,
     url,
-    ...extra,
+    screenshot: extra.screenshot,
+    actionData: extra.actionData,
   });
 
   if (!decision.allowed) {
     // Official MCP batch: nested steps that need a fresh grant fast-fail
     // with a standalone hint — never hang on popup, never silent-success.
     if (decision.needsPrompt && ctx.batchMode) {
-      const hostHint = url ? ` (${url})` : '';
       return {
         error:
           decision.reason ??
-          `permission_required${hostHint ? `: ${url}` : ''}` +
-            ` — call this tool standalone (not in browser_batch) so the user is prompted.`,
+          (`permission_required${url ? `: ${url}` : ''}` +
+            ` — call this tool standalone (not in browser_batch) so the user is prompted.`),
       };
     }
     // Official MCP standalone: bubble permission_required so the bridge can
@@ -905,28 +916,71 @@ const navigateTool: Tool = {
       // land on the interstitial so the model sees the safety page.
     }
 
+    // Official DOMAIN_TRANSITION (jZ): cross-host navigate pauses for Continue / Always.
+    let fromDomain = '';
+    let toDomain = '';
+    if (!isHistory) {
+      try {
+        const cur = await getTabUrl(tabId);
+        fromDomain = hostOf(cur);
+        toDomain = hostOf(navigateTarget);
+      } catch {
+        /* ignore */
+      }
+      if (fromDomain && toDomain && fromDomain !== toDomain) {
+        const transition = await guard(
+          ctx,
+          tabId,
+          PERMISSION.DOMAIN_TRANSITION,
+          `Navigate from ${fromDomain} to ${toDomain}`,
+          {
+            actionData: { fromDomain, toDomain, url: target },
+            // Use destination URL so deny-list / host display match toDomain.
+            urlOverride: navigateTarget,
+          },
+        );
+        if (transition) return transition;
+      }
+    }
+
     const blocked = await guard(
       ctx,
       tabId,
       PERMISSION.NAVIGATE,
       isHistory ? `Go ${target}` : `Navigate to ${target}`,
-      { actionData: { url: target } },
+      { actionData: { url: target, force: Boolean(args.force) } },
     );
     if (blocked) return blocked;
 
     try {
       await showIndicator(tabId, 'Navigating');
 
-      if (isHistory) {
-        // chrome.tabs 没有 back/forward，用页面 history
-        await chrome.scripting.executeScript({
-          target: { tabId, frameIds: [0] },
-          world: 'MAIN',
-          args: [target],
-          func: (dir: string) => (dir === 'back' ? history.back() : history.forward()),
-        });
-      } else {
-        await chrome.tabs.update(tabId, { url: navigateTarget });
+      // Official mI: beforeunload defaults to block; force:true accepts Leave site?
+      // Ensure dialog handler is installed so policy is honored.
+      const attachErr = await ensureAttached(tabId);
+      if (attachErr) return attachErr;
+
+      const force = Boolean(args.force);
+      const navResult = await obs.runWithBeforeunloadPolicy(tabId, force, async () => {
+        if (isHistory) {
+          await chrome.scripting.executeScript({
+            target: { tabId, frameIds: [0] },
+            world: 'MAIN',
+            args: [target],
+            func: (dir: string) => (dir === 'back' ? history.back() : history.forward()),
+          });
+        } else {
+          await chrome.tabs.update(tabId, { url: navigateTarget });
+        }
+      });
+
+      if (navResult.kind === 'blocked') {
+        return {
+          error: force
+            ? navResult.error
+            : 'Navigation was blocked by a "Leave site?" dialog — the page has unsaved changes. Retry with force: true to discard them and navigate anyway.',
+          errorCode: 'navigate_beforeunload_blocked',
+        };
       }
 
       const status = await waitForLoad(tabId);
@@ -938,13 +992,14 @@ const navigateTool: Tool = {
         status === 'timeout'
           ? ' The page is still loading; some content may be missing.'
           : '';
+      const leaveNote = navResult.kind === 'accepted' ? navResult.suffix : '';
 
       void maybeCaptureGifFrame(tabId, `navigate:${tab.url ?? target}`);
       return withContext(
         ctx,
         {
           output:
-            `Now on: ${tab.title ?? ''}\nURL: ${tab.url ?? target}${note}\n` +
+            `Now on: ${tab.title ?? ''}\nURL: ${tab.url ?? target}${note}${leaveNote}\n` +
             `All previous ref_N handles and screenshot coordinates are stale — call read_page or screenshot again.`,
         },
         tabId,
@@ -1058,72 +1113,46 @@ const tabsCloseTool: Tool = {
 const tabsContextMcpTool: Tool = {
   name: 'tabs_context_mcp',
   schema: tabsContextMcpSchema,
+  mcpOnly: true,
   parse: parser(tabsContextMcpInput, 'tabs_context_mcp'),
   async run(args: z.infer<typeof tabsContextMcpInput>) {
-    try {
-      const { getOrCreateMcpTabContext, formatMcpTabsList } = await import(
-        '@/mcp/group'
-      );
-      const ctx = await getOrCreateMcpTabContext({
-        createIfEmpty: Boolean(args.createIfEmpty),
-      });
-      if (!ctx) {
-        return {
-          output:
-            'No MCP tab groups found. Use createIfEmpty: true to create one.',
-        };
-      }
-      const body = formatMcpTabsList(ctx.tabs, ctx.tabGroupId, ctx.currentTabId);
-      return {
-        output: ctx.created
-          ? body.replace(
-              `MCP tab group ${ctx.tabGroupId}`,
-              `MCP tab group ${ctx.tabGroupId} [created]`,
-            )
-          : body,
-      };
-    } catch (e) {
-      return { error: `tabs_context_mcp failed: ${msg(e)}` };
-    }
+    // Official: native bridge owns this tool (session_scope + empty MCP PM).
+    // Chat model never receives the schema; if something still invokes it,
+    // redirect to the orange sidepanel group tools.
+    void args;
+    return {
+      error:
+        'tabs_context_mcp is only available over open MCP (Claude Desktop / Claude Code). ' +
+        'In the side panel use tabs_context / tabs_create instead.',
+    };
   },
 };
 
 const tabsCreateMcpTool: Tool = {
   name: 'tabs_create_mcp',
   schema: tabsCreateMcpSchema,
+  mcpOnly: true,
   parse: parser(emptyInput, 'tabs_create_mcp'),
-  async run(_args: never, ctx) {
-    try {
-      const { createMcpTab } = await import('@/mcp/group');
-      const r = await createMcpTab();
-      openedByAgent.add(r.tabId);
-      return withContext(
-        ctx,
-        {
-          output: `Created new tab. Tab ID: ${r.tabId} (group ${r.tabGroupId}).`,
-        },
-        r.tabId,
-      );
-    } catch (e) {
-      return { error: `tabs_create_mcp failed: ${msg(e)}` };
-    }
+  async run(_args: never) {
+    return {
+      error:
+        'tabs_create_mcp is only available over open MCP (Claude Desktop / Claude Code). ' +
+        'In the side panel use tabs_create instead.',
+    };
   },
 };
 
 const tabsCloseMcpTool: Tool = {
   name: 'tabs_close_mcp',
   schema: tabsCloseMcpSchema,
+  mcpOnly: true,
   parse: parser(tabsCloseMcpInput, 'tabs_close_mcp'),
-  async run(args: z.infer<typeof tabsCloseMcpInput>, ctx) {
-    try {
-      const { closeMcpTab } = await import('@/mcp/group');
-      await cdp.detach(args.tabId).catch(() => {});
-      await closeMcpTab(args.tabId);
-      openedByAgent.delete(args.tabId);
-      return withContext(ctx, { output: `Closed MCP tab ${args.tabId}.` });
-    } catch (e) {
-      return { error: `tabs_close_mcp failed: ${msg(e)}` };
-    }
+  async run(_args: z.infer<typeof tabsCloseMcpInput>) {
+    return {
+      error:
+        'tabs_close_mcp is only available over open MCP (Claude Desktop / Claude Code). ' +
+        'In the side panel use tabs_close instead.',
+    };
   },
 };
 
@@ -1512,13 +1541,13 @@ export function getTool(name: string): Tool | undefined {
   return byName.get(name);
 }
 
-/** 当前设置下启用的工具。 */
+/** 当前设置下启用的工具（chat sidepanel — excludes official MCP-only names）。 */
 export function enabledTools(): Tool[] {
   const s = peekSettings();
-  return ALL.filter((t) => !t.gated || t.gated(s));
+  return ALL.filter((t) => !t.mcpOnly && (!t.gated || t.gated(s)));
 }
 
-/** 发给模型的 tool 定义。 */
+/** 发给侧栏模型的 tool 定义（never includes tabs_*_mcp）。 */
 export function toolSchemas(): AnthropicToolSchema[] {
   return enabledTools().map((t) => t.schema);
 }
@@ -1578,7 +1607,9 @@ export async function runTool(
     };
   }
 
-  if (tool.gated && !tool.gated(peekSettings())) {
+  // Official open-MCP allowlist always includes javascript_tool etc.
+  // Chat-side setting gates must not block native-messaging bridge tools.
+  if (tool.gated && !ctx.skipPlanGate && !tool.gated(peekSettings())) {
     return {
       error: `The "${name}" tool is disabled in the extension settings. Tell the user they can enable it if they want this.`,
     };

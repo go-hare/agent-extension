@@ -37,9 +37,10 @@ if (!container) {
 // 600×600 permission popup — not the full chat agent (no CDP / sidepanel port).
 const params = new URLSearchParams(window.location.search);
 const mcpPermissionOnly = params.get('mcpPermissionOnly') === 'true';
-const mcpRequestId = params.get('requestId');
 
-if (mcpPermissionOnly && mcpRequestId) {
+// Official EZ popup must never mount the full chat agent (no CDP / sidepanel
+// port). Missing requestId is handled inside McpPermissionOnlyRoot as an error.
+if (mcpPermissionOnly) {
   void loadSettings();
   createRoot(container).render(<McpPermissionOnlyRoot />);
 } else {
