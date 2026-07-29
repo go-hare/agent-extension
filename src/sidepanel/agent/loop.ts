@@ -20,7 +20,7 @@ import type {
   ToolUseBlock,
 } from '@anthropic-ai/sdk/resources/messages';
 import { describeApiError, streamMessage } from '@/api/client';
-import { permissionManager, hostOf } from '@/permissions/manager';
+import { permissionManager, hostOf, netlocOf } from '@/permissions/manager';
 import { buildSystemPrompt, planModeReminder } from '@/prompts/system';
 import { peekSettings } from '@/storage/settings';
 import { runTool, toolSchemas } from '@/tools/registry';
@@ -266,11 +266,13 @@ function makeToolContext(
         typeof actionData?.toDomain === 'string' ? actionData.toDomain : hostOf(url);
 
       // Official DOMAIN_TRANSITION: check pair grants, not host:permission grants.
+      // Pass toolUseId so ONCE grants (Allow this action) can be consumed on retry.
       const decision =
         permission === PERMISSION.DOMAIN_TRANSITION
           ? permissionManager.checkDomainTransition(fromDomain, toDomain)
           : permissionManager.check(url, permission, {
               actionLabel: detail.actionLabel,
+              toolUseId,
             });
 
       if (decision.allowed) return decision;
@@ -289,6 +291,7 @@ function makeToolContext(
       }
 
       const host = toDomain || hostOf(url);
+      const netloc = netlocOf(url) || host;
 
       emit({
         type: 'permission_request',
@@ -308,6 +311,7 @@ function makeToolContext(
       const answer = await permissionManager.waitFor(toolUseId, permission, host, {
         fromDomain,
         toDomain,
+        netloc,
       });
       emit({ type: 'permission_resolved', toolUseId, granted: answer.granted });
 
@@ -331,6 +335,9 @@ function makeToolContext(
         };
       }
 
+      // resolve() already wrote ONCE (scope once) for this toolUseId+netloc.
+      // Current call is unblocked by the waitFor answer; a later check with the
+      // same toolUseId can consume the ONCE grant (mustAsk / multi-check tools).
       return { allowed: true, needsPrompt: false };
     },
   };

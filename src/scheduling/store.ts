@@ -173,6 +173,90 @@ export async function setScheduleEnabled(id: string, enabled: boolean): Promise<
   });
 }
 
+/** Update an existing schedule row (Options edit). Recomputes nextRun + alarm. */
+export async function updateSchedule(
+  id: string,
+  patch: {
+    title?: string;
+    prompt?: string;
+    everyMinutes?: number;
+    tabUrl?: string | null;
+    frequency?: ScheduleFrequency;
+    once?: boolean;
+    specificTime?: string | null;
+    specificDate?: string | null;
+    dayOfWeek?: number | null;
+    dayOfMonth?: number | null;
+    monthAndDay?: string | null;
+    datetime?: string | null;
+    enabled?: boolean;
+  },
+): Promise<Schedule | null> {
+  return withScheduleLock(async () => {
+    const items = await listSchedules();
+    const s = items.find((x) => x.id === id);
+    if (!s) return null;
+
+    if (patch.title !== undefined) s.title = patch.title;
+    if (patch.prompt !== undefined) s.prompt = patch.prompt;
+    if (patch.everyMinutes !== undefined) {
+      s.everyMinutes = Math.max(1, Math.round(patch.everyMinutes));
+    }
+    if (patch.tabUrl !== undefined) {
+      s.tabUrl = patch.tabUrl || undefined;
+    }
+    if (patch.frequency !== undefined) {
+      s.frequency = patch.frequency;
+      s.once = patch.frequency === 'once';
+    } else if (patch.once !== undefined) {
+      s.once = patch.once;
+      if (patch.once) s.frequency = 'once';
+    }
+    if (patch.specificTime !== undefined) {
+      s.specificTime = patch.specificTime || undefined;
+    }
+    if (patch.specificDate !== undefined) {
+      s.specificDate = patch.specificDate || undefined;
+    }
+    if (patch.dayOfWeek !== undefined) {
+      s.dayOfWeek = patch.dayOfWeek == null ? undefined : patch.dayOfWeek;
+    }
+    if (patch.dayOfMonth !== undefined) {
+      s.dayOfMonth = patch.dayOfMonth == null ? undefined : patch.dayOfMonth;
+    }
+    if (patch.monthAndDay !== undefined) {
+      s.monthAndDay = patch.monthAndDay || undefined;
+    }
+    if (patch.datetime !== undefined) {
+      s.datetime = patch.datetime || undefined;
+    }
+    if (patch.enabled !== undefined) s.enabled = patch.enabled;
+
+    // Clear fields that no longer apply to the chosen frequency.
+    const freq = s.frequency ?? (s.once ? 'once' : 'daily');
+    if (freq !== 'once') s.specificDate = undefined;
+    if (freq !== 'weekly') s.dayOfWeek = undefined;
+    if (freq !== 'monthly') s.dayOfMonth = undefined;
+    if (freq !== 'annually') s.monthAndDay = undefined;
+
+    const when = computeNextWhen(s, Date.now());
+    s.nextRun = when ?? Date.now() + s.everyMinutes * 60_000;
+
+    await saveSchedules(items);
+    if (s.enabled) {
+      await syncAlarm(s);
+      await saveSchedules(items);
+    } else {
+      try {
+        await chrome.alarms.clear(ALARM_PREFIX + id);
+      } catch {
+        /* ignore */
+      }
+    }
+    return s;
+  });
+}
+
 /**
  * Official updateAlarmForPrompt — clear + create with `when` (+ period for daily/weekly).
  * monthly/annually: when only (reschedule after fire).

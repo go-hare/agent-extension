@@ -183,6 +183,8 @@ export class PermissionManager {
       resolve: (r: { granted: boolean; scope: PermissionScope }) => void;
       permission: Permission;
       host: string;
+      /** Official ONCE netloc (URL.host); fall back to host when missing. */
+      netloc?: string;
       fromDomain?: string;
       toDomain?: string;
     }
@@ -532,13 +534,14 @@ export class PermissionManager {
     toolUseId: string,
     permission: Permission,
     host: string,
-    extra: { fromDomain?: string; toDomain?: string } = {},
+    extra: { fromDomain?: string; toDomain?: string; netloc?: string } = {},
   ): Promise<{ granted: boolean; scope: PermissionScope }> {
     return new Promise((resolve) => {
       this.pending.set(toolUseId, {
         resolve,
         permission,
         host,
+        netloc: extra.netloc || host,
         fromDomain: extra.fromDomain,
         toDomain: extra.toDomain,
       });
@@ -569,6 +572,14 @@ export class PermissionManager {
       }
       // Official empty MCP PM: only ONCE via grantOnce(toolUseId) on retry —
       // never sticky turn/always from the popup boolean response.
+      // Chat "Allow this action" (once): still write ONCE so a same-toolUseId
+      // re-check (mustAsk / sensitive) can consume it — MCP bridge also grantOnce.
+      if (
+        scope === 'once' &&
+        entry.permission !== PERMISSION.PLAN_APPROVAL
+      ) {
+        this.grantOnce(toolUseId, entry.netloc || entry.host);
+      }
       if (!this.isolated) {
         if (scope === 'turn' || scope === 'domain') {
           this.turnGrants.add(key);

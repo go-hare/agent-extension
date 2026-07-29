@@ -125,6 +125,45 @@ function pageElementSelectorInstall(): void {
     document.addEventListener('focus', onFocus, true);
   }
 
+  /** Sync buffer from control value — covers IME composition, paste, autofill. */
+  const isTypeable = (el: Element | null): el is HTMLElement => {
+    if (!el) return false;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag === 'input') {
+      const type = ((el as HTMLInputElement).type || 'text').toLowerCase();
+      return !['submit', 'button', 'checkbox', 'radio', 'file', 'image', 'reset', 'hidden'].includes(
+        type,
+      );
+    }
+    return (el as HTMLElement).isContentEditable || el.getAttribute('contenteditable') === 'true';
+  };
+
+  const readControlText = (el: HTMLElement): string => {
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+      return el.value ?? '';
+    }
+    if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') {
+      return el.innerText ?? el.textContent ?? '';
+    }
+    return '';
+  };
+
+  const syncKeyBufFromControl = (el: Element | null, sendUpdate: boolean) => {
+    if (!isTypeable(el)) return;
+    focusedEl = el;
+    const text = readControlText(el);
+    // Character-split so backspace path still works on latin; CJK stored as full string join.
+    keyBuf = text ? Array.from(text) : [];
+    if (sendUpdate) {
+      chrome.runtime.sendMessage({
+        type: 'KEYSTROKE_UPDATE',
+        text: keyBuf.join(''),
+        element: elementMeta(el),
+      });
+    }
+  };
+
   const onKeydown = (ev: KeyboardEvent) => {
     if (
       ev.target instanceof Element &&
@@ -134,14 +173,7 @@ function pageElementSelectorInstall(): void {
     }
     if (!focusedEl) return;
     const el = focusedEl as HTMLInputElement;
-    const tag = el.tagName.toLowerCase();
-    if (
-      tag !== 'textarea' &&
-      !(tag === 'input' && !['submit', 'button', 'checkbox', 'radio', 'file'].includes(el.type || '')) &&
-      el.getAttribute('contenteditable') !== 'true'
-    ) {
-      return;
-    }
+    if (!isTypeable(el)) return;
     const key = ev.key;
     const send = () => {
       chrome.runtime.sendMessage({
@@ -150,6 +182,11 @@ function pageElementSelectorInstall(): void {
         element: elementMeta(el),
       });
     };
+
+    // During IME composition, keydown chars are intermediate — wait for compositionend/input.
+    if (ev.isComposing || key === 'Process' || key === 'Unidentified') {
+      return;
+    }
 
     if (key === 'Backspace') {
       keyBuf.pop();
@@ -182,8 +219,24 @@ function pageElementSelectorInstall(): void {
     send();
   };
 
+  // input / compositionend / paste: official-parity type fidelity for IME & clipboard.
+  const onInputOrPaste = (ev: Event) => {
+    const t = ev.target;
+    if (!(t instanceof Element)) return;
+    syncKeyBufFromControl(t, true);
+  };
+
+  const onCompositionEnd = (ev: CompositionEvent) => {
+    const t = ev.target;
+    if (!(t instanceof Element)) return;
+    syncKeyBufFromControl(t, true);
+  };
+
   if (keystrokeWasOff) {
     document.addEventListener('keydown', onKeydown, true);
+    document.addEventListener('input', onInputOrPaste, true);
+    document.addEventListener('paste', onInputOrPaste, true);
+    document.addEventListener('compositionend', onCompositionEnd, true);
     w.__keystrokeListenersActive = true;
   }
 
@@ -338,6 +391,9 @@ function pageElementSelectorInstall(): void {
     if (full) {
       document.removeEventListener('keydown', onKeydown, true);
       document.removeEventListener('focus', onFocus, true);
+      document.removeEventListener('input', onInputOrPaste, true);
+      document.removeEventListener('paste', onInputOrPaste, true);
+      document.removeEventListener('compositionend', onCompositionEnd, true);
       w.__keystrokeListenersActive = false;
       if (w.__teachClaudeTeardown === teardown) {
         delete w.__teachClaudeTeardown;

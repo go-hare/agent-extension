@@ -41,6 +41,7 @@ import {
   deleteSchedule,
   listSchedules,
   setScheduleEnabled,
+  updateSchedule,
   formatScheduleSummary,
   type Schedule,
   type ScheduleFrequency,
@@ -85,6 +86,8 @@ export function Options() {
     tabUrl: '',
     everyMinutes: '15',
   });
+  /** When set, the schedule form updates this id instead of creating. */
+  const [schEditId, setSchEditId] = useState<string | null>(null);
   const [micRequest, setMicRequest] = useState(false);
   const [micStatus, setMicStatus] = useState<'unknown' | 'granted' | 'denied' | 'prompt'>(
     'unknown',
@@ -349,6 +352,8 @@ export function Options() {
         setScDraft={setScDraft}
         schDraft={schDraft}
         setSchDraft={setSchDraft}
+        schEditId={schEditId}
+        setSchEditId={setSchEditId}
         patch={patch}
         save={save}
         revert={revert}
@@ -390,6 +395,8 @@ function OptionsBody({
   setScDraft,
   schDraft,
   setSchDraft,
+  schEditId,
+  setSchEditId,
   patch,
   save,
   revert,
@@ -473,6 +480,8 @@ function OptionsBody({
       everyMinutes: string;
     }>
   >;
+  schEditId: string | null;
+  setSchEditId: React.Dispatch<React.SetStateAction<string | null>>;
   patch: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   save: () => Promise<void>;
   revert: () => void;
@@ -1070,6 +1079,27 @@ function OptionsBody({
                     type="button"
                     className={BTN_GHOST}
                     onClick={() => {
+                      setSchEditId(s.id);
+                      setSchDraft({
+                        title: s.title,
+                        prompt: s.prompt,
+                        frequency: s.frequency ?? (s.once ? 'once' : 'daily'),
+                        specificTime: s.specificTime ?? '09:00',
+                        specificDate: s.specificDate ?? '',
+                        dayOfWeek: String(s.dayOfWeek ?? 1),
+                        dayOfMonth: String(s.dayOfMonth ?? 1),
+                        monthAndDay: s.monthAndDay ?? '01-01',
+                        tabUrl: s.tabUrl ?? '',
+                        everyMinutes: String(s.everyMinutes || 15),
+                      });
+                    }}
+                  >
+                    {t.scheduleEdit}
+                  </button>
+                  <button
+                    type="button"
+                    className={BTN_GHOST}
+                    onClick={() => {
                       void setScheduleEnabled(s.id, !s.enabled).then(async () =>
                         setSchedules(await listSchedules()),
                       );
@@ -1081,6 +1111,21 @@ function OptionsBody({
                     type="button"
                     aria-label={`Delete schedule ${s.title}`}
                     onClick={() => {
+                      if (schEditId === s.id) {
+                        setSchEditId(null);
+                        setSchDraft({
+                          title: '',
+                          prompt: '',
+                          frequency: 'daily',
+                          specificTime: '09:00',
+                          specificDate: '',
+                          dayOfWeek: '1',
+                          dayOfMonth: '1',
+                          monthAndDay: '01-01',
+                          tabUrl: '',
+                          everyMinutes: '15',
+                        });
+                      }
                       void deleteSchedule(s.id).then(async () => setSchedules(await listSchedules()));
                     }}
                     className="rounded-md p-1.5 text-text-300 transition-colors hover:bg-bg-300 hover:text-danger-100"
@@ -1093,7 +1138,34 @@ function OptionsBody({
           )}
         </div>
         <div className="mt-3 space-y-2 rounded-lg border-[0.5px] border-border-300 bg-bg-000 p-3">
-          <div className="font-base-bold text-sm text-text-100">{t.createScheduledTask}</div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="font-base-bold text-sm text-text-100">
+              {schEditId ? t.scheduleEditing : t.createScheduledTask}
+            </div>
+            {schEditId ? (
+              <button
+                type="button"
+                className={BTN_GHOST}
+                onClick={() => {
+                  setSchEditId(null);
+                  setSchDraft({
+                    title: '',
+                    prompt: '',
+                    frequency: 'daily',
+                    specificTime: '09:00',
+                    specificDate: '',
+                    dayOfWeek: '1',
+                    dayOfMonth: '1',
+                    monthAndDay: '01-01',
+                    tabUrl: '',
+                    everyMinutes: '15',
+                  });
+                }}
+              >
+                {t.cancel}
+              </button>
+            ) : null}
+          </div>
           <input
             className={INPUT}
             placeholder={t.scheduleTitlePlaceholder}
@@ -1212,27 +1284,29 @@ function OptionsBody({
                 specificTime = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
               }
               const freq = schDraft.frequency;
-              void createSchedule({
+              const payload = {
                 title: schDraft.title.trim(),
                 prompt: schDraft.prompt.trim(),
                 everyMinutes: clampInt(schDraft.everyMinutes, 1, 24 * 60, 15),
                 frequency: freq,
                 once: freq === 'once',
-                specificTime,
+                specificTime: specificTime ?? null,
                 specificDate:
                   freq === 'once' && schDraft.specificDate.trim()
                     ? schDraft.specificDate.trim()
-                    : undefined,
+                    : null,
                 dayOfWeek:
-                  freq === 'weekly' ? clampInt(schDraft.dayOfWeek, 0, 6, 1) : undefined,
+                  freq === 'weekly' ? clampInt(schDraft.dayOfWeek, 0, 6, 1) : null,
                 dayOfMonth:
-                  freq === 'monthly' ? clampInt(schDraft.dayOfMonth, 1, 31, 1) : undefined,
+                  freq === 'monthly' ? clampInt(schDraft.dayOfMonth, 1, 31, 1) : null,
                 monthAndDay:
                   freq === 'annually' && /^\d{2}-\d{2}$/.test(schDraft.monthAndDay.trim())
                     ? schDraft.monthAndDay.trim()
-                    : undefined,
-                tabUrl: schDraft.tabUrl.trim() || undefined,
-              }).then(async () => {
+                    : null,
+                tabUrl: schDraft.tabUrl.trim() || null,
+              };
+              const resetForm = () => {
+                setSchEditId(null);
                 setSchDraft({
                   title: '',
                   prompt: '',
@@ -1245,11 +1319,33 @@ function OptionsBody({
                   tabUrl: '',
                   everyMinutes: '15',
                 });
-                setSchedules(await listSchedules());
-              });
+              };
+              if (schEditId) {
+                void updateSchedule(schEditId, payload).then(async () => {
+                  resetForm();
+                  setSchedules(await listSchedules());
+                });
+              } else {
+                void createSchedule({
+                  title: payload.title,
+                  prompt: payload.prompt,
+                  everyMinutes: payload.everyMinutes,
+                  frequency: payload.frequency,
+                  once: payload.once,
+                  specificTime: payload.specificTime ?? undefined,
+                  specificDate: payload.specificDate ?? undefined,
+                  dayOfWeek: payload.dayOfWeek ?? undefined,
+                  dayOfMonth: payload.dayOfMonth ?? undefined,
+                  monthAndDay: payload.monthAndDay ?? undefined,
+                  tabUrl: payload.tabUrl ?? undefined,
+                }).then(async () => {
+                  resetForm();
+                  setSchedules(await listSchedules());
+                });
+              }
             }}
           >
-            {t.createScheduledTask}
+            {schEditId ? t.scheduleSaveEdit : t.createScheduledTask}
           </button>
         </div>
       </Section>

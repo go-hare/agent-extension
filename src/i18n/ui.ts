@@ -349,6 +349,9 @@ export type UiStrings = {
   createScheduledTask: string;
   schedulePause: string;
   scheduleResume: string;
+  scheduleEdit: string;
+  scheduleSaveEdit: string;
+  scheduleEditing: string;
   noSchedulesYet: string;
   scheduleTitlePlaceholder: string;
   schedulePromptPlaceholder: string;
@@ -663,6 +666,9 @@ const EN_EXTRA: Pack = {
   createScheduledTask: 'Create scheduled task',
   schedulePause: 'Pause',
   scheduleResume: 'Resume',
+  scheduleEdit: 'Edit',
+  scheduleSaveEdit: 'Save changes',
+  scheduleEditing: 'Editing schedule',
   noSchedulesYet: 'No schedules yet.',
   scheduleTitlePlaceholder: 'Title',
   schedulePromptPlaceholder: 'Prompt to run when the task fires',
@@ -712,6 +718,9 @@ const ZH_CN_EXTRA: Pack = {
   createScheduledTask: '创建计划任务',
   schedulePause: '暂停',
   scheduleResume: '继续',
+  scheduleEdit: '编辑',
+  scheduleSaveEdit: '保存修改',
+  scheduleEditing: '正在编辑计划',
   noSchedulesYet: '暂无计划任务。',
   scheduleTitlePlaceholder: '标题',
   schedulePromptPlaceholder: '任务触发时运行的提示词',
@@ -1647,6 +1656,9 @@ function build(locale: UiLocale): UiStrings {
     ),
     schedulePause: p('schedulePause', isZh ? '暂停' : 'Pause'),
     scheduleResume: p('scheduleResume', isZh ? '继续' : 'Resume'),
+    scheduleEdit: p('scheduleEdit', isZh ? '编辑' : 'Edit'),
+    scheduleSaveEdit: p('scheduleSaveEdit', isZh ? '保存修改' : 'Save changes'),
+    scheduleEditing: p('scheduleEditing', isZh ? '正在编辑计划' : 'Editing schedule'),
     noSchedulesYet: p('noSchedulesYet', isZh ? '暂无计划任务。' : 'No schedules yet.'),
     scheduleTitlePlaceholder: p(
       'scheduleTitlePlaceholder',

@@ -745,14 +745,40 @@ export function TeachClaude({
           {steps.map((s, i) => (
             <div
               key={s.id}
-              className="border-[0.5px] border-border-300 rounded-xl px-3 py-2 bg-bg-000/30"
+              className="border-[0.5px] border-border-300 rounded-xl bg-bg-000/30 overflow-hidden"
             >
-              <p className="font-base text-sm text-text-100">
-                {i + 1}. {s.description}
-                {s.action === 'type' && s.masked ? (
-                  <span className="text-text-400"> (••••••••)</span>
+              <div className="px-3 py-2">
+                <p className="font-base text-sm text-text-100">
+                  {i + 1}. {s.description}
+                  {s.action === 'type' && s.masked ? (
+                    <span className="text-text-400"> (••••••••)</span>
+                  ) : null}
+                </p>
+                {s.speechTranscript ? (
+                  <p className="font-small text-text-300 italic mt-1">
+                    “{s.speechTranscript}”
+                  </p>
                 ) : null}
-              </p>
+              </div>
+              {s.screenshot && s.clickPosition ? (
+                <div className="px-3 pb-3">
+                  <StepShot
+                    screenshot={s.screenshot}
+                    click={s.clickPosition}
+                    viewport={s.viewportDimensions}
+                  />
+                </div>
+              ) : s.screenshot ? (
+                <div className="px-3 pb-3">
+                  <div className="relative w-full h-48 overflow-hidden rounded-xl border-[0.5px] border-border-200">
+                    <img
+                      src={`data:image/jpeg;base64,${s.screenshot}`}
+                      alt=""
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                </div>
+              ) : null}
             </div>
           ))}
         </div>
