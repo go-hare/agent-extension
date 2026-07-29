@@ -41,7 +41,9 @@ import {
   deleteSchedule,
   listSchedules,
   setScheduleEnabled,
+  formatScheduleSummary,
   type Schedule,
+  type ScheduleFrequency,
 } from '@/scheduling/store';
 import { UiLocaleProvider, useUi } from '@/i18n/UiLocaleContext';
 import { getUiStrings, UI_LOCALES } from '@/i18n/ui';
@@ -71,7 +73,18 @@ export function Options() {
   const [shortcuts, setShortcuts] = useState<Shortcut[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [scDraft, setScDraft] = useState({ command: '', title: '', description: '', prompt: '' });
-  const [schDraft, setSchDraft] = useState({ title: '', prompt: '', everyMinutes: '15' });
+  const [schDraft, setSchDraft] = useState({
+    title: '',
+    prompt: '',
+    frequency: 'daily' as ScheduleFrequency,
+    specificTime: '09:00',
+    specificDate: '',
+    dayOfWeek: '1',
+    dayOfMonth: '1',
+    monthAndDay: '01-01',
+    tabUrl: '',
+    everyMinutes: '15',
+  });
   const [micRequest, setMicRequest] = useState(false);
   const [micStatus, setMicStatus] = useState<'unknown' | 'granted' | 'denied' | 'prompt'>(
     'unknown',
@@ -434,9 +447,31 @@ function OptionsBody({
   setScDraft: React.Dispatch<
     React.SetStateAction<{ command: string; title: string; description: string; prompt: string }>
   >;
-  schDraft: { title: string; prompt: string; everyMinutes: string };
+  schDraft: {
+    title: string;
+    prompt: string;
+    frequency: ScheduleFrequency;
+    specificTime: string;
+    specificDate: string;
+    dayOfWeek: string;
+    dayOfMonth: string;
+    monthAndDay: string;
+    tabUrl: string;
+    everyMinutes: string;
+  };
   setSchDraft: React.Dispatch<
-    React.SetStateAction<{ title: string; prompt: string; everyMinutes: string }>
+    React.SetStateAction<{
+      title: string;
+      prompt: string;
+      frequency: ScheduleFrequency;
+      specificTime: string;
+      specificDate: string;
+      dayOfWeek: string;
+      dayOfMonth: string;
+      monthAndDay: string;
+      tabUrl: string;
+      everyMinutes: string;
+    }>
   >;
   patch: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   save: () => Promise<void>;
@@ -991,7 +1026,7 @@ function OptionsBody({
       <Section title={t.sectionSchedules} note={t.sectionSchedulesNote}>
         <div className="space-y-2">
           {schedules.length === 0 ? (
-            <p className="font-base text-sm text-text-400">No schedules yet.</p>
+            <p className="font-base text-sm text-text-400">{t.noSchedulesYet}</p>
           ) : (
             schedules.map((s) => (
               <div
@@ -1000,7 +1035,31 @@ function OptionsBody({
               >
                 <div className="min-w-0">
                   <div className="font-base text-sm text-text-100">
-                    {s.title} · every {s.everyMinutes} min {s.enabled ? '' : '(paused)'}
+                    {s.title}
+                    {!s.enabled ? (
+                      <span className="text-text-400"> · {t.schedulePause}</span>
+                    ) : null}
+                  </div>
+                  <div className="font-small text-[0.6875rem] text-text-400">
+                    {formatScheduleSummary(s, {
+                      once: t.scheduleOnce,
+                      daily: t.scheduleDaily,
+                      weekly: t.scheduleWeekly,
+                      monthly: t.scheduleMonthly,
+                      annually: t.scheduleAnnually,
+                      paused: t.schedulePause,
+                      everyMinutes: t.scheduleEveryMinutesFallback,
+                      dayNames: [
+                        t.scheduleDaySun,
+                        t.scheduleDayMon,
+                        t.scheduleDayTue,
+                        t.scheduleDayWed,
+                        t.scheduleDayThu,
+                        t.scheduleDayFri,
+                        t.scheduleDaySat,
+                      ],
+                    })}
+                    {s.tabUrl ? ` · ${s.tabUrl}` : ''}
                   </div>
                   <div className="font-small line-clamp-2 text-[0.6875rem] text-text-500">
                     {s.prompt}
@@ -1016,7 +1075,7 @@ function OptionsBody({
                       );
                     }}
                   >
-                    {s.enabled ? 'Pause' : 'Resume'}
+                    {s.enabled ? t.schedulePause : t.scheduleResume}
                   </button>
                   <button
                     type="button"
@@ -1034,22 +1093,96 @@ function OptionsBody({
           )}
         </div>
         <div className="mt-3 space-y-2 rounded-lg border-[0.5px] border-border-300 bg-bg-000 p-3">
-          <div className="font-base-bold text-sm text-text-100">Add schedule</div>
+          <div className="font-base-bold text-sm text-text-100">{t.createScheduledTask}</div>
           <input
             className={INPUT}
-            placeholder="Title"
+            placeholder={t.scheduleTitlePlaceholder}
             value={schDraft.title}
             onChange={(e) => setSchDraft((d) => ({ ...d, title: e.target.value }))}
           />
-          <input
-            className={INPUT}
-            placeholder="Every N minutes (min 1)"
-            value={schDraft.everyMinutes}
-            onChange={(e) => setSchDraft((d) => ({ ...d, everyMinutes: e.target.value }))}
-          />
+          <label className="block">
+            <span className="font-small text-text-400">{t.scheduleFrequency}</span>
+            <select
+              className={cn(INPUT, 'mt-1')}
+              value={schDraft.frequency}
+              onChange={(e) =>
+                setSchDraft((d) => ({
+                  ...d,
+                  frequency: e.target.value as ScheduleFrequency,
+                }))
+              }
+            >
+              <option value="once">{t.scheduleOnce}</option>
+              <option value="daily">{t.scheduleDaily}</option>
+              <option value="weekly">{t.scheduleWeekly}</option>
+              <option value="monthly">{t.scheduleMonthly}</option>
+              <option value="annually">{t.scheduleAnnually}</option>
+            </select>
+          </label>
+          {schDraft.frequency === 'once' ? (
+            <input
+              className={INPUT}
+              type="date"
+              placeholder={t.scheduleDatePlaceholder}
+              value={schDraft.specificDate}
+              onChange={(e) => setSchDraft((d) => ({ ...d, specificDate: e.target.value }))}
+            />
+          ) : null}
+          {schDraft.frequency === 'weekly' ? (
+            <select
+              className={INPUT}
+              value={schDraft.dayOfWeek}
+              onChange={(e) => setSchDraft((d) => ({ ...d, dayOfWeek: e.target.value }))}
+            >
+              <option value="0">{t.scheduleDaySun}</option>
+              <option value="1">{t.scheduleDayMon}</option>
+              <option value="2">{t.scheduleDayTue}</option>
+              <option value="3">{t.scheduleDayWed}</option>
+              <option value="4">{t.scheduleDayThu}</option>
+              <option value="5">{t.scheduleDayFri}</option>
+              <option value="6">{t.scheduleDaySat}</option>
+            </select>
+          ) : null}
+          {schDraft.frequency === 'monthly' ? (
+            <input
+              className={INPUT}
+              type="number"
+              min={1}
+              max={31}
+              placeholder={t.scheduleDayOfMonth}
+              value={schDraft.dayOfMonth}
+              onChange={(e) => setSchDraft((d) => ({ ...d, dayOfMonth: e.target.value }))}
+            />
+          ) : null}
+          {schDraft.frequency === 'annually' ? (
+            <input
+              className={INPUT}
+              placeholder={t.scheduleMonthDay}
+              value={schDraft.monthAndDay}
+              onChange={(e) => setSchDraft((d) => ({ ...d, monthAndDay: e.target.value }))}
+            />
+          ) : null}
+          <label className="block">
+            <span className="font-small text-text-400">{t.scheduleTime}</span>
+            <input
+              className={cn(INPUT, 'mt-1')}
+              placeholder={t.scheduleTimePlaceholder}
+              value={schDraft.specificTime}
+              onChange={(e) => setSchDraft((d) => ({ ...d, specificTime: e.target.value }))}
+            />
+          </label>
+          <label className="block">
+            <span className="font-small text-text-400">{t.scheduleStartFrom}</span>
+            <input
+              className={cn(INPUT, 'mt-1')}
+              placeholder="https://example.com"
+              value={schDraft.tabUrl}
+              onChange={(e) => setSchDraft((d) => ({ ...d, tabUrl: e.target.value }))}
+            />
+          </label>
           <textarea
             className={cn(INPUT, 'min-h-[4.5rem]')}
-            placeholder="Prompt to run when the side panel is open"
+            placeholder={t.schedulePromptPlaceholder}
             value={schDraft.prompt}
             onChange={(e) => setSchDraft((d) => ({ ...d, prompt: e.target.value }))}
           />
@@ -1058,18 +1191,65 @@ function OptionsBody({
             className={BTN_GHOST}
             disabled={!schDraft.title.trim() || !schDraft.prompt.trim()}
             onClick={() => {
-              const mins = clampInt(schDraft.everyMinutes, 1, 24 * 60, 15);
+              const timeRaw = schDraft.specificTime.trim();
+              // Accept "9:30", "09:30", "9:30 AM", "14:00"
+              let specificTime: string | undefined;
+              if (timeRaw) {
+                const ampm = timeRaw.match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])?$/);
+                if (!ampm) {
+                  window.alert(t.scheduleInvalidTime);
+                  return;
+                }
+                let h = Number(ampm[1]);
+                const m = Number(ampm[2]);
+                const mer = ampm[3]?.toLowerCase();
+                if (mer === 'pm' && h < 12) h += 12;
+                if (mer === 'am' && h === 12) h = 0;
+                if (h > 23 || m > 59) {
+                  window.alert(t.scheduleInvalidTime);
+                  return;
+                }
+                specificTime = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+              }
+              const freq = schDraft.frequency;
               void createSchedule({
                 title: schDraft.title.trim(),
                 prompt: schDraft.prompt.trim(),
-                everyMinutes: mins,
+                everyMinutes: clampInt(schDraft.everyMinutes, 1, 24 * 60, 15),
+                frequency: freq,
+                once: freq === 'once',
+                specificTime,
+                specificDate:
+                  freq === 'once' && schDraft.specificDate.trim()
+                    ? schDraft.specificDate.trim()
+                    : undefined,
+                dayOfWeek:
+                  freq === 'weekly' ? clampInt(schDraft.dayOfWeek, 0, 6, 1) : undefined,
+                dayOfMonth:
+                  freq === 'monthly' ? clampInt(schDraft.dayOfMonth, 1, 31, 1) : undefined,
+                monthAndDay:
+                  freq === 'annually' && /^\d{2}-\d{2}$/.test(schDraft.monthAndDay.trim())
+                    ? schDraft.monthAndDay.trim()
+                    : undefined,
+                tabUrl: schDraft.tabUrl.trim() || undefined,
               }).then(async () => {
-                setSchDraft({ title: '', prompt: '', everyMinutes: '15' });
+                setSchDraft({
+                  title: '',
+                  prompt: '',
+                  frequency: 'daily',
+                  specificTime: '09:00',
+                  specificDate: '',
+                  dayOfWeek: '1',
+                  dayOfMonth: '1',
+                  monthAndDay: '01-01',
+                  tabUrl: '',
+                  everyMinutes: '15',
+                });
                 setSchedules(await listSchedules());
               });
             }}
           >
-            Create schedule
+            {t.createScheduledTask}
           </button>
         </div>
       </Section>

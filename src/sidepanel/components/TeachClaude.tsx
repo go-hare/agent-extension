@@ -166,12 +166,17 @@ export function TeachClaude({
     : '';
 
   const stopSpeech = useCallback(() => {
+    const rec = speechRef.current;
+    // Clear ref first so onend does not auto-restart.
+    speechRef.current = null;
     try {
-      speechRef.current?.stop();
+      if (rec) {
+        rec.onend = null;
+        rec.stop();
+      }
     } catch {
       /* ignore */
     }
-    speechRef.current = null;
     setSpeechOn(false);
     setInterim('');
   }, []);
@@ -217,7 +222,20 @@ export function TeachClaude({
       }
       setInterim(interimText.trim());
     };
-    rec.onerror = () => setSpeechOn(false);
+    rec.onerror = () => {
+      // hard failures (not-allowed / network) stop; no-speech may still fire onend
+      setSpeechOn(false);
+    };
+    // Chrome ends continuous recognition after silence — restart while still on.
+    rec.onend = () => {
+      if (speechRef.current !== rec) return;
+      try {
+        rec.start();
+      } catch {
+        speechRef.current = null;
+        setSpeechOn(false);
+      }
+    };
     try {
       rec.start();
       speechRef.current = rec;
@@ -749,7 +767,7 @@ export function TeachClaude({
           className="w-full px-4 py-2.5 rounded-[14px] bg-text-100 hover:bg-text-200 text-bg-100 font-button transition-all disabled:opacity-50 flex items-center justify-center gap-2"
         >
           {saving ? <SpinnerIcon size={14} className="animate-spin" /> : null}
-          {saving ? t.teachGenerating : t.teachSaveAsShortcut}
+          {saving ? t.teachGenerating : t.teachSaveAsTeachClaude}
         </button>
         <button
           type="button"
@@ -782,6 +800,7 @@ interface BrowserSpeechRecognition {
   lang: string;
   onresult: ((ev: BrowserSpeechRecognitionEvent) => void) | null;
   onerror: ((ev: Event) => void) | null;
+  onend: (() => void) | null;
   start(): void;
   stop(): void;
 }

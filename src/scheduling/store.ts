@@ -392,6 +392,75 @@ function makeMonthDate(
 }
 
 /** Infer official calendar fields from convert XML datetime + frequency. */
+/**
+ * Human-readable recurrence for Options list (official-ish).
+ * Labels come from the UI layer — pass already-localized frequency words.
+ */
+export function formatScheduleSummary(
+  s: Schedule,
+  labels: {
+    once: string;
+    daily: string;
+    weekly: string;
+    monthly: string;
+    annually: string;
+    paused: string;
+    everyMinutes: (n: number) => string;
+    dayNames: string[];
+  },
+): string {
+  const freq = s.frequency ?? (s.once ? 'once' : 'daily');
+  const time = s.specificTime?.trim();
+  const parts: string[] = [];
+  switch (freq) {
+    case 'once': {
+      const date = s.specificDate?.trim();
+      if (date && time) parts.push(`${labels.once} · ${date} ${time}`);
+      else if (date) parts.push(`${labels.once} · ${date}`);
+      else if (time) parts.push(`${labels.once} · ${time}`);
+      else parts.push(labels.everyMinutes(s.everyMinutes));
+      break;
+    }
+    case 'daily':
+      parts.push(time ? `${labels.daily} · ${time}` : labels.daily);
+      break;
+    case 'weekly': {
+      const name =
+        s.dayOfWeek !== undefined && labels.dayNames[s.dayOfWeek]
+          ? labels.dayNames[s.dayOfWeek]
+          : '';
+      parts.push(
+        time
+          ? `${labels.weekly}${name ? ` · ${name}` : ''} · ${time}`
+          : `${labels.weekly}${name ? ` · ${name}` : ''}`,
+      );
+      break;
+    }
+    case 'monthly': {
+      const dom = s.dayOfMonth ?? '';
+      parts.push(
+        time
+          ? `${labels.monthly}${dom ? ` · ${dom}` : ''} · ${time}`
+          : `${labels.monthly}${dom ? ` · ${dom}` : ''}`,
+      );
+      break;
+    }
+    case 'annually': {
+      const md = s.monthAndDay ?? '';
+      parts.push(
+        time
+          ? `${labels.annually}${md ? ` · ${md}` : ''} · ${time}`
+          : `${labels.annually}${md ? ` · ${md}` : ''}`,
+      );
+      break;
+    }
+    default:
+      parts.push(labels.everyMinutes(s.everyMinutes));
+  }
+  if (!s.enabled) parts.push(labels.paused);
+  return parts.filter(Boolean).join(' ');
+}
+
 export function parseDatetimeFields(
   datetime: string | undefined,
   frequency: ScheduleFrequency,

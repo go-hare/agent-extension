@@ -71,6 +71,8 @@ export class RecordingSession {
   private onNavCommitted?: (
     details: chrome.webNavigation.WebNavigationTransitionCallbackDetails,
   ) => void;
+  /** Last navigate URL per tab — avoid SPA/hash spam. */
+  private lastNavUrl = new Map<number, string>();
 
   constructor(opts: RecordingSessionOptions) {
     this.opts = opts;
@@ -211,6 +213,15 @@ export class RecordingSession {
       if (details.transitionType === 'auto_subframe') return;
       // Full navigation — re-inject after load
       if (isRecordableUrl(details.url)) {
+        const prev = this.lastNavUrl.get(details.tabId);
+        if (prev === details.url) {
+          // Same URL (redirect/hash churn) — still re-arm selector, no new step.
+          setTimeout(() => {
+            if (this.recording && !this.paused) void this.ensureInject(details.tabId);
+          }, 400);
+          return;
+        }
+        this.lastNavUrl.set(details.tabId, details.url);
         this.push({
           action: 'navigate',
           description: formatNavigateDescription(details.url),

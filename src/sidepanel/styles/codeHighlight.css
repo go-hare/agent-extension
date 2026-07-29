@@ -1,0 +1,72 @@
+/**
+ * Prism/refractor token colors for sidepanel code blocks.
+ * Tuned for Claude theme tokens (works in light + dark via --text / --accent).
+ */
+
+.md-code-block .token.comment,
+.md-code-block .token.prolog,
+.md-code-block .token.doctype,
+.md-code-block .token.cdata {
+  color: hsl(var(--text-400));
+  font-style: italic;
+}
+
+.md-code-block .token.punctuation {
+  color: hsl(var(--text-300));
+}
+
+.md-code-block .token.property,
+.md-code-block .token.tag,
+.md-code-block .token.boolean,
+.md-code-block .token.number,
+.md-code-block .token.constant,
+.md-code-block .token.symbol,
+.md-code-block .token.deleted {
+  color: hsl(var(--danger-000, 0 70% 50%));
+}
+
+.md-code-block .token.selector,
+.md-code-block .token.attr-name,
+.md-code-block .token.string,
+.md-code-block .token.char,
+.md-code-block .token.builtin,
+.md-code-block .token.inserted {
+  color: hsl(var(--success-100, 140 40% 40%));
+}
+
+.md-code-block .token.operator,
+.md-code-block .token.entity,
+.md-code-block .token.url,
+.md-code-block .language-css .token.string,
+.md-code-block .style .token.string {
+  color: hsl(var(--text-200));
+}
+
+.md-code-block .token.atrule,
+.md-code-block .token.attr-value,
+.md-code-block .token.keyword {
+  color: hsl(var(--accent-main-100, 25 60% 50%));
+}
+
+.md-code-block .token.function,
+.md-code-block .token.class-name {
+  color: hsl(var(--accent-secondary-100, 210 60% 50%));
+}
+
+.md-code-block .token.regex,
+.md-code-block .token.important,
+.md-code-block .token.variable {
+  color: hsl(var(--warning-100, 40 80% 45%));
+}
+
+/* KaTeX overflow in narrow sidepanel */
+.claude-response .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  padding: 0.25rem 0;
+}
+
+.claude-response .katex {
+  font-size: 1.05em;
+}

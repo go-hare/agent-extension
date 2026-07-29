@@ -457,6 +457,23 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
     try {
       if (sidepanelPorts > 0) {
+        // When sidepanel is open, still honor Start-from URL (focus/create tab).
+        if (s.tabUrl && /^https?:\/\//i.test(s.tabUrl)) {
+          try {
+            const tabs = await chrome.tabs.query({ currentWindow: true });
+            const match = tabs.find((t) => t.url && t.url.startsWith(s.tabUrl!));
+            if (match?.id != null) {
+              await chrome.tabs.update(match.id, { active: true });
+              if (match.windowId != null) {
+                await chrome.windows.update(match.windowId, { focused: true });
+              }
+            } else {
+              await chrome.tabs.create({ url: s.tabUrl, active: true });
+            }
+          } catch {
+            /* best-effort — prompt still runs */
+          }
+        }
         await enqueuePrompt({
           scheduleId: s.id,
           title: s.title,

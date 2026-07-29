@@ -148,12 +148,10 @@ export function describeCall(
       const value = args.value ?? args.text;
       if (value != null && String(value).length > 0) {
         const short = truncate(String(value), 20);
+        // Official: Set input to “{value}” — keep EN shape; locale packs use toolSetFormValue alone.
         return {
           ...base,
-          label: t
-            ? // Official: Set input to “{value}” — no dedicated key in our pack yet
-              `Set input to “${short}”`
-            : `Set input to “${short}”`,
+          label: `${t?.toolSetFormValue ?? 'Set form value'}: “${short}”`,
         };
       }
       return { ...base, label: t?.toolSetFormValue ?? base.label };

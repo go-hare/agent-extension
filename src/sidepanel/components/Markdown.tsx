@@ -6,16 +6,31 @@
  * 外层再包 `claude-response` + `font-claude-response text-sm leading-[1.65rem]…`
  *（见 Message.tsx），字体族由官方 CSS 的 `.claude-response h*` 补齐。
  *
+ * Official 1.0.81 also:
+ *  - remark-math + rehype-katex (lazy)
+ *  - mermaid.core for ```mermaid fences
+ *  - refractor for code highlighting
+ *
  * 安全约束：
  * 1. **不开 rehype-raw** — 页面抄来的 HTML 绝不能进特权侧栏。
  * 2. **链接** 只放行 http(s)，`target=_blank` + `rel=noopener noreferrer`。
  * 3. **图片** 不渲染成 `<img>`（防外带追踪像素），降级纯文本。
+ * 4. Mermaid: securityLevel sandbox + htmlLabels false (official).
  */
 
-import { memo, type ReactNode } from 'react';
+import { Children, isValidElement, memo, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import { cn } from './cn';
+import { MermaidBlock } from './MermaidBlock';
+import { CodeBlock } from './CodeBlock';
+import { languageFromClassName } from './CodeHighlight';
+
+// KaTeX stylesheet (official loads katex-*.css with the math plugins).
+import 'katex/dist/katex.min.css';
+import '../styles/codeHighlight.css';
 
 function hostOf(href: string): string {
   try {
@@ -23,6 +38,18 @@ function hostOf(href: string): string {
   } catch {
     return '';
   }
+}
+
+function textFromChildren(children: ReactNode): string {
+  return Children.toArray(children)
+    .map((c) => {
+      if (typeof c === 'string' || typeof c === 'number') return String(c);
+      if (isValidElement<{ children?: ReactNode }>(c)) {
+        return textFromChildren(c.props.children);
+      }
+      return '';
+    })
+    .join('');
 }
 
 /**
@@ -50,6 +77,9 @@ function heading(level: 1 | 2 | 3 | 4 | 5 | 6) {
   };
 }
 
+const PRE_CLASS =
+  'my-2 overflow-x-auto rounded-lg border-[0.5px] border-border-300 bg-bg-200 p-2.5 text-[0.813rem] leading-[1.5]';
+
 const COMPONENTS: Components = {
   h1: heading(1),
   h2: heading(2),
@@ -59,13 +89,10 @@ const COMPONENTS: Components = {
   h6: heading(6),
 
   // Official response override on oC.p: break-words whitespace-normal
-  // (parent Message also applies [&_p]:!text-sm [&_p]:text-text-100)
   p({ children }) {
     return <p className="break-words whitespace-normal">{children}</p>;
   },
 
-  // Official response ul/ol (overrides simpler oC defaults):
-  //   list-disc|decimal flex flex-col gap-1 pl-8 mb-3 + nested tweaks
   ul({ children }) {
     return (
       <ul
@@ -100,7 +127,6 @@ const COMPONENTS: Components = {
     );
   },
 
-  // Official response blockquote (richer than oC.blockQuote)
   blockquote({ children }) {
     return (
       <blockquote className="ml-2 border-l-4 border-[hsl(var(--border-300)/0.1)] pl-4 text-text-300">
@@ -109,7 +135,6 @@ const COMPONENTS: Components = {
     );
   },
 
-  // Official link: underline underline-offset-2 decoration-1 decoration-current/40 …
   a({ href, children }) {
     const url = typeof href === 'string' ? href : '';
     if (!/^https?:\/\//i.test(url)) return <span>{children}</span>;
@@ -136,26 +161,40 @@ const COMPONENTS: Components = {
     );
   },
 
-  // Block fence: keep a simple official-adjacent chrome (no mermaid / copy header).
+  /**
+   * Block fence handling (official):
+   *  - language-mermaid → Mermaid render
+   *  - other languages → refractor highlight inside pre
+   *  - bare pre → plain pre chrome
+   */
   pre({ children }) {
-    return (
-      <pre className="my-2 overflow-x-auto rounded-lg border-[0.5px] border-border-300 bg-bg-200 p-2.5 text-[0.813rem] leading-[1.5]">
-        {children}
-      </pre>
-    );
+    // react-markdown v9+: pre receives <code class="language-…"> as child.
+    const only = Children.toArray(children)[0];
+    if (isValidElement<{ className?: string; children?: ReactNode }>(only)) {
+      const className = only.props.className ?? '';
+      const lang = languageFromClassName(className);
+      const codeText = textFromChildren(only.props.children).replace(/\n$/, '');
+
+      if (lang === 'mermaid') {
+        return <MermaidBlock code={codeText} />;
+      }
+
+      return <CodeBlock code={codeText} language={lang} />;
+    }
+
+    return <pre className={PRE_CLASS}>{children}</pre>;
   },
 
-  // Official oC.code: bg-text-200/5 border border-0.5 border-border-300 …
-  // Block code sits under <pre><code class="language-…"> — skip chip chrome there.
+  // Inline code only — block fences are fully handled in `pre`.
   code({ className, children }) {
     const isBlock =
       typeof className === 'string' && className.startsWith('language-');
     if (isBlock) {
-      return (
-        <code className={cn('font-mono whitespace-pre-wrap', className)}>
-          {children}
-        </code>
-      );
+      // Should be wrapped by our `pre` handler; keep a safe fallback.
+      const lang = languageFromClassName(className);
+      const codeText = textFromChildren(children).replace(/\n$/, '');
+      if (lang === 'mermaid') return <MermaidBlock code={codeText} />;
+      return <CodeBlock code={codeText} language={lang} />;
     }
     return (
       <code
@@ -219,7 +258,11 @@ const COMPONENTS: Components = {
 
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={COMPONENTS}>
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex]}
+      components={COMPONENTS}
+    >
       {text}
     </ReactMarkdown>
   );

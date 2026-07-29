@@ -109,6 +109,8 @@ export function isRecordableUrl(url: string | undefined | null): boolean {
     url.startsWith('brave://') ||
     url.startsWith('devtools://') ||
     url.startsWith('chrome-search://') ||
+    // file:// is not operable (isOperableUrl blocks it) — don't start a dead recording.
+    url.startsWith('file://') ||
     url.startsWith('https://chrome.google.com/webstore') ||
     url.startsWith('https://chromewebstore.google.com')
   );

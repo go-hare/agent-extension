@@ -21,6 +21,7 @@ import itIT from './locales/it-IT.json';
 import ruRU from './locales/ru-RU.json';
 import hiIN from './locales/hi-IN.json';
 import idID from './locales/id-ID.json';
+import { CHROME_PARITY } from './chromeParityStrings';
 
 export type UiLocale =
   | 'en-US'
@@ -323,6 +324,48 @@ export type UiStrings = {
   pairingIgnore: string;
   pairingConnect: string;
 
+  /** Markdown code fence chrome (official aCdAsIsVv0 copy button). */
+  copyToClipboard: string;
+  codeCopied: string;
+  codeBlockLabel: string;
+  mermaidRendering: string;
+  mermaidError: string;
+  mermaidEmpty: string;
+
+  /** Official 8Rj4WgXPcB / 4l6vz1/eZ5 / p556q3uvbn */
+  copyMessage: string;
+  copy: string;
+  copied: string;
+
+  /** Options schedule form (official SchedulingFields) */
+  scheduleOnce: string;
+  scheduleDaily: string;
+  scheduleWeekly: string;
+  scheduleMonthly: string;
+  scheduleAnnually: string;
+  scheduleStartFrom: string;
+  scheduleTimePlaceholder: string;
+  scheduleInvalidTime: string;
+  createScheduledTask: string;
+  schedulePause: string;
+  scheduleResume: string;
+  noSchedulesYet: string;
+  scheduleTitlePlaceholder: string;
+  schedulePromptPlaceholder: string;
+  scheduleEveryMinutesFallback: (n: number) => string;
+  scheduleDaySun: string;
+  scheduleDayMon: string;
+  scheduleDayTue: string;
+  scheduleDayWed: string;
+  scheduleDayThu: string;
+  scheduleDayFri: string;
+  scheduleDaySat: string;
+  scheduleDatePlaceholder: string;
+  scheduleDayOfMonth: string;
+  scheduleMonthDay: string;
+  scheduleFrequency: string;
+  scheduleTime: string;
+
   /** Teach Claude / Record workflow */
   teachClaude: string;
   teachYourWorkflow: string;
@@ -343,6 +386,8 @@ export type UiStrings = {
   teachSaveAndRun: string;
   teachSaveOnly: string;
   teachSaveAsShortcut: string;
+  /** Official ZpE0fwR7on */
+  teachSaveAsTeachClaude: string;
   teachGenerating: string;
   teachEnableMic: string;
   teachIntroBodyMic: string;
@@ -422,7 +467,7 @@ const EN_EXTRA: Pack = {
   permission: 'Permission',
   claudeWantsApproval: 'Claude wants your approval to:',
   sitePermissionsDisabled: 'Site-level permissions are disabled for this site.',
-  claudePlanTitle: "Claude's plan",
+  claudePlanTitle: 'Claude’s plan',
   planAllowSites: 'Allow actions on these sites',
   planApproach: 'Approach to follow',
   planFooter:
@@ -597,6 +642,36 @@ const EN_EXTRA: Pack = {
     'When Desktop / Claude Code needs a grant, a focused 600×600 permission popup opens (official mcpPermissionOnly). MCP ignores chat Always / “Act without asking”; each action is once + retry. Nested browser_batch steps only run if already allowed — first-time grants must be standalone.',
   mcpGroupHint:
     'While a session is active, tabs leaving the yellow MCP group are detached from the debugger automatically (official hygiene).',
+  // Markdown chrome (official aCdAsIsVv0)
+  copyToClipboard: 'Copy to clipboard',
+  codeCopied: 'Copied',
+  codeBlockLabel: 'code',
+  mermaidRendering: 'Rendering diagram…',
+  mermaidError: 'Diagram error',
+  mermaidEmpty: 'Empty mermaid diagram',
+  copyMessage: 'Copy message',
+  copy: 'Copy',
+  copied: 'Copied',
+  scheduleOnce: 'Once',
+  scheduleDaily: 'Daily',
+  scheduleWeekly: 'Weekly',
+  scheduleMonthly: 'Monthly',
+  scheduleAnnually: 'Annually',
+  scheduleStartFrom: 'Start from',
+  scheduleTimePlaceholder: 'e.g., 9:30 AM or 14:00',
+  scheduleInvalidTime: 'Invalid time format',
+  createScheduledTask: 'Create scheduled task',
+  schedulePause: 'Pause',
+  scheduleResume: 'Resume',
+  noSchedulesYet: 'No schedules yet.',
+  scheduleTitlePlaceholder: 'Title',
+  schedulePromptPlaceholder: 'Prompt to run when the task fires',
+  scheduleDatePlaceholder: 'YYYY-MM-DD',
+  scheduleDayOfMonth: 'Day of month (1–31)',
+  scheduleMonthDay: 'MM-DD',
+  scheduleFrequency: 'Frequency',
+  scheduleTime: 'Time (HH:mm)',
+  teachSaveAsTeachClaude: 'Save as Teach Claude',
 };
 
 const ZH_CN_EXTRA: Pack = {
@@ -617,6 +692,35 @@ const ZH_CN_EXTRA: Pack = {
   answerPermissionAbove: '请先回答上方的权限请求',
   attachFiles: '附加文件',
   actions: '操作',
+  copyToClipboard: '复制到剪贴板',
+  codeCopied: '已复制',
+  codeBlockLabel: '代码',
+  mermaidRendering: '正在渲染图表…',
+  mermaidError: '图表错误',
+  mermaidEmpty: '空的 mermaid 图表',
+  copyMessage: '复制消息',
+  copy: '复制',
+  copied: '已复制',
+  scheduleOnce: '一次',
+  scheduleDaily: '每天',
+  scheduleWeekly: '每周',
+  scheduleMonthly: '每月',
+  scheduleAnnually: '每年',
+  scheduleStartFrom: '开始于',
+  scheduleTimePlaceholder: '例如：9:30 AM 或 14:00',
+  scheduleInvalidTime: '无效的时间格式',
+  createScheduledTask: '创建计划任务',
+  schedulePause: '暂停',
+  scheduleResume: '继续',
+  noSchedulesYet: '暂无计划任务。',
+  scheduleTitlePlaceholder: '标题',
+  schedulePromptPlaceholder: '任务触发时运行的提示词',
+  scheduleDatePlaceholder: 'YYYY-MM-DD',
+  scheduleDayOfMonth: '每月第几天（1–31）',
+  scheduleMonthDay: 'MM-DD',
+  scheduleFrequency: '频率',
+  scheduleTime: '时间（HH:mm）',
+  teachSaveAsTeachClaude: '保存为“教 Claude”',
   takeScreenshot: '截取屏幕',
   addAnImage: '添加图片',
   screenshotUnavailable: '此页面无法使用屏幕截图',
@@ -625,7 +729,7 @@ const ZH_CN_EXTRA: Pack = {
   permission: '权限',
   claudeWantsApproval: 'Claude 需要您批准：',
   sitePermissionsDisabled: '此网站已禁用站点级权限。',
-  claudePlanTitle: "Claude's plan",
+  claudePlanTitle: 'Claude’s plan',
   planAllowSites: '允许在这些网站上执行操作',
   planApproach: '遵循的方法',
   planFooter: 'Claude 将仅使用列出的网站。访问其他内容前会询问您。',
@@ -802,6 +906,12 @@ const CRITICAL_OVERRIDES: Partial<Record<UiLocale, Pack>> = {
     switchBackClassic: '切回经典版',
     openSettings: '打开设置',
     pinDismiss: '知道了',
+    copyToClipboard: '复制到剪贴板',
+    codeCopied: '已复制',
+    codeBlockLabel: '代码',
+    mermaidRendering: '正在渲染图表…',
+    mermaidError: '图表错误',
+    mermaidEmpty: '空的 mermaid 图表',
   },
   'zh-TW': {
     beforeYouStart: '開始之前',
@@ -815,6 +925,12 @@ const CRITICAL_OVERRIDES: Partial<Record<UiLocale, Pack>> = {
     switchBackClassic: '切回經典版',
     openSettings: '開啟設定',
     pinDismiss: '知道了',
+    copyToClipboard: '複製到剪貼簿',
+    codeCopied: '已複製',
+    codeBlockLabel: '程式碼',
+    mermaidRendering: '正在渲染圖表…',
+    mermaidError: '圖表錯誤',
+    mermaidEmpty: '空白的 mermaid 圖表',
   },
   'ja-JP': {
     beforeYouStart: '始める前に',
@@ -828,6 +944,12 @@ const CRITICAL_OVERRIDES: Partial<Record<UiLocale, Pack>> = {
     switchBackClassic: 'クラシックに戻る',
     openSettings: '設定を開く',
     pinDismiss: '了解',
+    copyToClipboard: 'クリップボードにコピー',
+    codeCopied: 'コピーしました',
+    codeBlockLabel: 'コード',
+    mermaidRendering: '図を描画中…',
+    mermaidError: '図のエラー',
+    mermaidEmpty: '空の mermaid 図',
   },
   'ko-KR': {
     beforeYouStart: '시작하기 전에',
@@ -841,6 +963,12 @@ const CRITICAL_OVERRIDES: Partial<Record<UiLocale, Pack>> = {
     switchBackClassic: '클래식으로 돌아가기',
     openSettings: '설정 열기',
     pinDismiss: '확인',
+    copyToClipboard: '클립보드에 복사',
+    codeCopied: '복사됨',
+    codeBlockLabel: '코드',
+    mermaidRendering: '다이어그램 렌더링 중…',
+    mermaidError: '다이어그램 오류',
+    mermaidEmpty: '빈 mermaid 다이어그램',
   },
   'de-DE': {
     beforeYouStart: 'Bevor Sie beginnen',
@@ -854,6 +982,12 @@ const CRITICAL_OVERRIDES: Partial<Record<UiLocale, Pack>> = {
     switchBackClassic: 'Zurück zur klassischen Ansicht',
     openSettings: 'Einstellungen öffnen',
     pinDismiss: 'Verstanden',
+    copyToClipboard: 'In Zwischenablage kopieren',
+    codeCopied: 'Kopiert',
+    codeBlockLabel: 'Code',
+    mermaidRendering: 'Diagramm wird gerendert…',
+    mermaidError: 'Diagrammfehler',
+    mermaidEmpty: 'Leeres Mermaid-Diagramm',
   },
   'fr-FR': {
     beforeYouStart: 'Avant de commencer',
@@ -867,6 +1001,12 @@ const CRITICAL_OVERRIDES: Partial<Record<UiLocale, Pack>> = {
     switchBackClassic: 'Revenir au classique',
     openSettings: 'Ouvrir les paramètres',
     pinDismiss: 'Compris',
+    copyToClipboard: 'Copier dans le presse-papiers',
+    codeCopied: 'Copié',
+    codeBlockLabel: 'code',
+    mermaidRendering: 'Rendu du diagramme…',
+    mermaidError: 'Erreur de diagramme',
+    mermaidEmpty: 'Diagramme mermaid vide',
   },
   'es-ES': {
     beforeYouStart: 'Antes de empezar',
@@ -880,6 +1020,12 @@ const CRITICAL_OVERRIDES: Partial<Record<UiLocale, Pack>> = {
     switchBackClassic: 'Volver al clásico',
     openSettings: 'Abrir configuración',
     pinDismiss: 'Entendido',
+    copyToClipboard: 'Copiar al portapapeles',
+    codeCopied: 'Copiado',
+    codeBlockLabel: 'código',
+    mermaidRendering: 'Renderizando diagrama…',
+    mermaidError: 'Error de diagrama',
+    mermaidEmpty: 'Diagrama mermaid vacío',
   },
   'es-419': {
     beforeYouStart: 'Antes de empezar',
@@ -893,6 +1039,12 @@ const CRITICAL_OVERRIDES: Partial<Record<UiLocale, Pack>> = {
     switchBackClassic: 'Volver al clásico',
     openSettings: 'Abrir configuración',
     pinDismiss: 'Entendido',
+    copyToClipboard: 'Copiar al portapapeles',
+    codeCopied: 'Copiado',
+    codeBlockLabel: 'código',
+    mermaidRendering: 'Renderizando diagrama…',
+    mermaidError: 'Error de diagrama',
+    mermaidEmpty: 'Diagrama mermaid vacío',
   },
   'pt-BR': {
     beforeYouStart: 'Antes de começar',
@@ -906,6 +1058,12 @@ const CRITICAL_OVERRIDES: Partial<Record<UiLocale, Pack>> = {
     switchBackClassic: 'Voltar ao clássico',
     openSettings: 'Abrir configurações',
     pinDismiss: 'Entendi',
+    copyToClipboard: 'Copiar para a área de transferência',
+    codeCopied: 'Copiado',
+    codeBlockLabel: 'código',
+    mermaidRendering: 'Renderizando diagrama…',
+    mermaidError: 'Erro no diagrama',
+    mermaidEmpty: 'Diagrama mermaid vazio',
   },
   'it-IT': {
     beforeYouStart: 'Prima di iniziare',
@@ -919,6 +1077,12 @@ const CRITICAL_OVERRIDES: Partial<Record<UiLocale, Pack>> = {
     switchBackClassic: 'Torna al classico',
     openSettings: 'Apri impostazioni',
     pinDismiss: 'Ho capito',
+    copyToClipboard: 'Copia negli appunti',
+    codeCopied: 'Copiato',
+    codeBlockLabel: 'codice',
+    mermaidRendering: 'Rendering del diagramma…',
+    mermaidError: 'Errore del diagramma',
+    mermaidEmpty: 'Diagramma mermaid vuoto',
   },
   'ru-RU': {
     beforeYouStart: 'Перед началом',
@@ -932,6 +1096,12 @@ const CRITICAL_OVERRIDES: Partial<Record<UiLocale, Pack>> = {
     switchBackClassic: 'Вернуться к классике',
     openSettings: 'Открыть настройки',
     pinDismiss: 'Понятно',
+    copyToClipboard: 'Копировать в буфер обмена',
+    codeCopied: 'Скопировано',
+    codeBlockLabel: 'код',
+    mermaidRendering: 'Отрисовка диаграммы…',
+    mermaidError: 'Ошибка диаграммы',
+    mermaidEmpty: 'Пустая диаграмма mermaid',
   },
   'hi-IN': {
     beforeYouStart: 'शुरू करने से पहले',
@@ -945,6 +1115,12 @@ const CRITICAL_OVERRIDES: Partial<Record<UiLocale, Pack>> = {
     switchBackClassic: 'क्लासिक पर वापस जाएँ',
     openSettings: 'सेटिंग्स खोलें',
     pinDismiss: 'समझ गया',
+    copyToClipboard: 'क्लिपबोर्ड पर कॉपी करें',
+    codeCopied: 'कॉपी हो गया',
+    codeBlockLabel: 'कोड',
+    mermaidRendering: 'आरेख रेंडर हो रहा है…',
+    mermaidError: 'आरेख त्रुटि',
+    mermaidEmpty: 'खाली mermaid आरेख',
   },
   'id-ID': {
     beforeYouStart: 'Sebelum memulai',
@@ -958,6 +1134,12 @@ const CRITICAL_OVERRIDES: Partial<Record<UiLocale, Pack>> = {
     switchBackClassic: 'Kembali ke klasik',
     openSettings: 'Buka pengaturan',
     pinDismiss: 'Mengerti',
+    copyToClipboard: 'Salin ke clipboard',
+    codeCopied: 'Disalin',
+    codeBlockLabel: 'kode',
+    mermaidRendering: 'Merender diagram…',
+    mermaidError: 'Kesalahan diagram',
+    mermaidEmpty: 'Diagram mermaid kosong',
   },
 };
 
@@ -1008,7 +1190,9 @@ function parseSettingsFooter(
 function build(locale: UiLocale): UiStrings {
   const pack: Pack = {
     ...EN_EXTRA,
+    ...(CHROME_PARITY['en-US'] ?? {}),
     ...PACKS['en-US'],
+    ...(CHROME_PARITY[locale] ?? {}),
     ...PACKS[locale],
     ...(LOCALE_EXTRAS[locale] ?? {}),
   };
@@ -1095,7 +1279,7 @@ function build(locale: UiLocale): UiStrings {
     stepsMany: (n) => (isZh ? `${n} 步` : `${n} steps`),
     done: p('done', isZh ? '完成' : 'Done'),
 
-    // Official W() tool labels (ids from 1.0.81 packs)
+    // Official W() tool labels — CHROME_PARITY supplies 14 locales; ZH fallback last.
     toolTakeScreenshot: p('toolTakeScreenshot', isZh ? '截取屏幕' : 'Take screenshot'),
     toolClick: p('toolClick', isZh ? '点击' : 'Click'),
     toolRightClick: p('toolRightClick', isZh ? '右键点击' : 'Right-click'),
@@ -1103,8 +1287,18 @@ function build(locale: UiLocale): UiStrings {
     toolTripleClick: p('toolTripleClick', isZh ? '三击' : 'Triple-click'),
     toolDrag: p('toolDrag', isZh ? '拖动' : 'Drag'),
     toolTypeText: p('toolTypeText', isZh ? '输入文本' : 'Type text'),
-    toolTypeWith: (text) =>
-      isZh ? `输入：“${text}”` : `Type: “${text}”`,
+    toolTypeWith: (text) => {
+      // Prefer current-locale parity only — avoid EN template bleeding via pack merge.
+      const localTpl = (CHROME_PARITY[locale] ?? {})['toolTypeWithTpl'];
+      const tpl =
+        localTpl ||
+        (isZh ? '输入：“{text}”' : p('toolTypeWithTpl', 'Type: “{text}”'));
+      return tpl.includes('{text}')
+        ? tpl.replace('{text}', text)
+        : isZh
+          ? `输入：“${text}”`
+          : `Type: “${text}”`;
+    },
     toolPressKey: p('toolPressKey', isZh ? '按键' : 'Press key'),
     toolPressKeyWith: (key) =>
       isZh ? `按键：${key}` : `Press key: ${key}`,
@@ -1125,12 +1319,32 @@ function build(locale: UiLocale): UiStrings {
     ),
     toolReadPageAll: p('toolReadPageAll', isZh ? '读取页面（全部）' : 'Read page (all)'),
     toolFindElement: p('toolFindElement', isZh ? '查找元素' : 'Find element'),
-    toolFindQuery: (q) => (isZh ? `查找：“${q}”` : `Find: “${q}”`),
+    toolFindQuery: (q) => {
+      const localTpl = (CHROME_PARITY[locale] ?? {})['toolFindQueryTpl'];
+      const tpl =
+        localTpl ||
+        (isZh ? '查找：“{query}”' : p('toolFindQueryTpl', 'Find: “{query}”'));
+      return tpl.includes('{query}')
+        ? tpl.replace('{query}', q)
+        : isZh
+          ? `查找：“${q}”`
+          : `Find: “${q}”`;
+    },
     toolExtractPageText: p(
       'toolExtractPageText',
       isZh ? '提取页面文本' : 'Extract page text',
     ),
-    toolNavigateTo: (url) => (isZh ? `导航至 ${url}` : `Navigate to ${url}`),
+    toolNavigateTo: (url) => {
+      const localTpl = (CHROME_PARITY[locale] ?? {})['toolNavigateToTpl'];
+      const tpl =
+        localTpl ||
+        (isZh ? '导航至 {url}' : p('toolNavigateToTpl', 'Navigate to {url}'));
+      return tpl.includes('{url}')
+        ? tpl.replace('{url}', url)
+        : isZh
+          ? `导航至 ${url}`
+          : `Navigate to ${url}`;
+    },
     toolSetFormValue: p('toolSetFormValue', isZh ? '设置表单值' : 'Set form value'),
     toolCreateNewTab: p('toolCreateNewTab', isZh ? '创建新标签页' : 'Create new tab'),
     toolGetTabs: p('toolGetTabs', isZh ? '获取标签页' : 'Get tabs'),
@@ -1206,7 +1420,7 @@ function build(locale: UiLocale): UiStrings {
       isZh ? '创建任务失败，请重试。' : 'Failed to create scheduled task. Please try again.',
     ),
     // Official eS (update_plan) — keep EN title "Claude's plan" like the official ZH pack.
-    claudePlanTitle: p('claudePlanTitle', "Claude's plan"),
+    claudePlanTitle: p('claudePlanTitle', 'Claude’s plan'),
     planAllowSites: p(
       'planAllowSites',
       isZh ? '允许在这些网站上执行操作' : 'Allow actions on these sites',
@@ -1395,6 +1609,74 @@ function build(locale: UiLocale): UiStrings {
       isZh ? '连接' : EN_EXTRA.pairingConnect!,
     ),
 
+    copyToClipboard: p(
+      'copyToClipboard',
+      isZh ? '复制到剪贴板' : EN_EXTRA.copyToClipboard!,
+    ),
+    codeCopied: p('codeCopied', isZh ? '已复制' : EN_EXTRA.codeCopied!),
+    codeBlockLabel: p('codeBlockLabel', isZh ? '代码' : EN_EXTRA.codeBlockLabel!),
+    mermaidRendering: p(
+      'mermaidRendering',
+      isZh ? '正在渲染图表…' : EN_EXTRA.mermaidRendering!,
+    ),
+    mermaidError: p('mermaidError', isZh ? '图表错误' : EN_EXTRA.mermaidError!),
+    mermaidEmpty: p(
+      'mermaidEmpty',
+      isZh ? '空的 mermaid 图表' : EN_EXTRA.mermaidEmpty!,
+    ),
+    copyMessage: p('copyMessage', isZh ? '复制消息' : 'Copy message'),
+    copy: p('copy', isZh ? '复制' : 'Copy'),
+    copied: p('copied', isZh ? '已复制' : 'Copied'),
+    scheduleOnce: p('scheduleOnce', isZh ? '一次' : 'Once'),
+    scheduleDaily: p('scheduleDaily', isZh ? '每天' : 'Daily'),
+    scheduleWeekly: p('scheduleWeekly', isZh ? '每周' : 'Weekly'),
+    scheduleMonthly: p('scheduleMonthly', isZh ? '每月' : 'Monthly'),
+    scheduleAnnually: p('scheduleAnnually', isZh ? '每年' : 'Annually'),
+    scheduleStartFrom: p('scheduleStartFrom', isZh ? '开始于' : 'Start from'),
+    scheduleTimePlaceholder: p(
+      'scheduleTimePlaceholder',
+      isZh ? '例如：9:30 AM 或 14:00' : 'e.g., 9:30 AM or 14:00',
+    ),
+    scheduleInvalidTime: p(
+      'scheduleInvalidTime',
+      isZh ? '无效的时间格式' : 'Invalid time format',
+    ),
+    createScheduledTask: p(
+      'createScheduledTask',
+      isZh ? '创建计划任务' : 'Create scheduled task',
+    ),
+    schedulePause: p('schedulePause', isZh ? '暂停' : 'Pause'),
+    scheduleResume: p('scheduleResume', isZh ? '继续' : 'Resume'),
+    noSchedulesYet: p('noSchedulesYet', isZh ? '暂无计划任务。' : 'No schedules yet.'),
+    scheduleTitlePlaceholder: p(
+      'scheduleTitlePlaceholder',
+      isZh ? '标题' : 'Title',
+    ),
+    schedulePromptPlaceholder: p(
+      'schedulePromptPlaceholder',
+      isZh ? '任务触发时运行的提示词' : 'Prompt to run when the task fires',
+    ),
+    scheduleEveryMinutesFallback: (n) =>
+      isZh ? `每 ${n} 分钟` : `every ${n} min`,
+    scheduleDaySun: p('scheduleDaySun', isZh ? '周日' : 'Sun'),
+    scheduleDayMon: p('scheduleDayMon', isZh ? '周一' : 'Mon'),
+    scheduleDayTue: p('scheduleDayTue', isZh ? '周二' : 'Tue'),
+    scheduleDayWed: p('scheduleDayWed', isZh ? '周三' : 'Wed'),
+    scheduleDayThu: p('scheduleDayThu', isZh ? '周四' : 'Thu'),
+    scheduleDayFri: p('scheduleDayFri', isZh ? '周五' : 'Fri'),
+    scheduleDaySat: p('scheduleDaySat', isZh ? '周六' : 'Sat'),
+    scheduleDatePlaceholder: p(
+      'scheduleDatePlaceholder',
+      isZh ? 'YYYY-MM-DD' : 'YYYY-MM-DD',
+    ),
+    scheduleDayOfMonth: p(
+      'scheduleDayOfMonth',
+      isZh ? '每月第几天（1–31）' : 'Day of month (1–31)',
+    ),
+    scheduleMonthDay: p('scheduleMonthDay', 'MM-DD'),
+    scheduleFrequency: p('scheduleFrequency', isZh ? '频率' : 'Frequency'),
+    scheduleTime: p('scheduleTime', isZh ? '时间（HH:mm）' : 'Time (HH:mm)'),
+
     teachClaude: p('teachClaude', 'Teach Claude'),
     teachYourWorkflow: p('teachYourWorkflow', 'Teach Claude your workflow'),
     teachIntroBody: p('teachIntroBody', EN_EXTRA.teachIntroBody!),
@@ -1461,6 +1743,10 @@ function build(locale: UiLocale): UiStrings {
     teachSaveAndRun: p('teachSaveAndRun', 'Save & run'),
     teachSaveOnly: p('teachSaveOnly', 'Save only'),
     teachSaveAsShortcut: p('teachSaveAsShortcut', 'Save as shortcut'),
+    teachSaveAsTeachClaude: p(
+      'teachSaveAsTeachClaude',
+      isZh ? '保存为“教 Claude”' : 'Save as Teach Claude',
+    ),
     teachGenerating: p('teachGenerating', 'Generating…'),
     teachLoading: p('teachLoading', 'Loading…'),
     teachDefaultTitle: p('teachDefaultTitle', 'Recorded workflow'),
