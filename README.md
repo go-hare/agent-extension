@@ -80,3 +80,6 @@ Options page: Base URL + API key for the side-panel agent (self-hosted / proxy).
 ## License / origin
 
 Internal functional clone for self-hosted use. Not affiliated with Anthropic. Do not ship the private `keys/extension.pem` or reuse this id for a public store listing without rotating keys.
+
+## 链接
+- [((https://linux.do/))](https://linux.do/) — linux.do 社区
